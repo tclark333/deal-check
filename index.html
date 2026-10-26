@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Deal Check</title>
+<meta name="description" content="Which size is the better deal? Enter the prices and see.">
+<meta name="theme-color" content="#1f7a4d">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Deal Check">
+<style>
+  :root {
+    --bg: #f3f6f4;
+    --card: #ffffff;
+    --text: #17221c;
+    --muted: #5d6b63;
+    --line: #d5ddd8;
+    --accent: #1f7a4d;
+    --accent-soft: #e2f3e9;
+    --field: #f7f9f8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101613;
+      --card: #19221d;
+      --text: #eef4f0;
+      --muted: #9aaba1;
+      --line: #2d3a33;
+      --accent: #3fbf7f;
+      --accent-soft: #173326;
+      --field: #121a16;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 17px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main {
+    max-width: 560px;
+    margin: 0 auto;
+    padding: max(16px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  h1 { margin: 0; font-size: 26px; }
+  button {
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+  }
+  .link {
+    border: 0;
+    background: none;
+    color: var(--accent);
+    font-weight: 600;
+    padding: 8px 4px;
+  }
+
+  /* one card per size */
+  #items { display: flex; flex-direction: column; gap: 10px; }
+  .item {
+    position: relative;
+    background: var(--card);
+    border: 2px solid var(--line);
+    border-radius: 14px;
+    padding: 12px 14px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px 10px;
+  }
+  .item.best { border-color: var(--accent); background: var(--accent-soft); }
+  .item .badge {
+    display: none;
+    position: absolute;
+    top: -11px;
+    left: 12px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 2px 8px;
+    border-radius: 999px;
+  }
+  .item.best .badge { display: block; }
+  .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .field span { font-size: 13px; color: var(--muted); font-weight: 600; }
+  .row { display: flex; gap: 6px; min-width: 0; }
+  input, select {
+    font: inherit;
+    font-size: 22px; /* big, and 16px or more so iOS doesn't zoom in */
+    color: var(--text);
+    background: var(--field);
+    border: 1.5px solid var(--line);
+    border-radius: 10px;
+    padding: 8px 10px;
+    min-width: 0;
+    width: 100%;
+  }
+  select { font-size: 18px; width: auto; flex: none; padding: 8px 6px; }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .money { position: relative; }
+  .money::before {
+    content: "$";
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 22px;
+    color: var(--muted);
+    pointer-events: none;
+  }
+  .money input { padding-left: 24px; }
+  .per {
+    grid-column: 1 / -1;
+    font-size: 15px;
+    color: var(--muted);
+    min-height: 1.35em;
+  }
+  .remove {
+    position: absolute;
+    top: 4px;
+    right: 6px;
+    border: 0;
+    background: none;
+    color: var(--muted);
+    font-size: 22px;
+    line-height: 1;
+    padding: 4px 6px;
+  }
+  .item.removable { padding-top: 22px; }
+
+  #add {
+    margin-top: 10px;
+    width: 100%;
+    border: 2px dashed var(--line);
+    background: none;
+    color: var(--muted);
+    border-radius: 14px;
+    padding: 10px;
+    font-weight: 600;
+  }
+
+  #result {
+    margin-top: 16px;
+    background: var(--card);
+    border-radius: 14px;
+    padding: 16px;
+    border: 2px solid var(--line);
+    min-height: 64px;
+  }
+  #result.win { border-color: var(--accent); }
+  #result .headline { font-size: 22px; font-weight: 700; margin: 0; }
+  #result .headline b { color: var(--accent); }
+  #result .detail { margin: 6px 0 0; color: var(--muted); }
+  #result .hint { margin: 0; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Deal Check</h1>
+    <button class="link" id="reset" type="button">Reset</button>
+  </header>
+  <div id="items"></div>
+  <button id="add" type="button">+ Add another size</button>
+  <section id="result" aria-live="polite"></section>
+</main>
+<script>
+// Each unit as a multiple of its kind's base unit: mL for volume, g for weight, 1 for a count.
+const UNITS = {
+  mL: { kind: "volume", base: 1 },
+  L: { kind: "volume", base: 1000 },
+  "fl oz": { kind: "volume", base: 29.5735 },
+  gal: { kind: "volume", base: 3785.41 },
+  g: { kind: "weight", base: 1 },
+  kg: { kind: "weight", base: 1000 },
+  oz: { kind: "weight", base: 28.3495 },
+  lb: { kind: "weight", base: 453.592 },
+  ct: { kind: "count", base: 1 },
+};
+// What "price per" is shown in for each kind.
+const PER = { volume: "fl oz", weight: "oz", count: "ct" };
+const DEFAULTS = [
+  { size: "750", unit: "mL" },
+  { size: "1.75", unit: "L" },
+];
+const MAX_ITEMS = 4;
+
+const itemsEl = document.getElementById("items");
+const resultEl = document.getElementById("result");
+const addButton = document.getElementById("add");
+
+/** A typed number ("$24.99", "1,000", ".75"), or NaN. */
+function num(text) {
+  const n = parseFloat(String(text).replace(/[$,\s]/g, ""));
+  return n > 0 ? n : NaN;
+}
+
+function money(n) {
+  return n.toLocaleString("en-US", { style: "currency", currency: "USD" });
+}
+
+/** Unit prices can be a few cents, so show a third decimal when they're small. */
+function unitMoney(n) {
+  return "$" + n.toFixed(n < 1 ? 3 : 2);
+}
+
+function sizeText(size, unit) {
+  return `${size} ${unit}`;
+}
+
+function addItem({ size, unit }, focus = false) {
+  const item = document.createElement("div");
+  item.className = "item";
+  item.innerHTML = `
+    <div class="badge">BEST DEAL</div>
+    <label class="field"><span>Price</span>
+      <div class="money"><input class="price" inputmode="decimal" autocomplete="off" placeholder="0.00"></div>
+    </label>
+    <label class="field"><span>Size</span>
+      <div class="row">
+        <input class="size" inputmode="decimal" autocomplete="off">
+        <select class="unit" aria-label="Unit">${Object.keys(UNITS).map((u) => `<option>${u}</option>`).join("")}</select>
+      </div>
+    </label>
+    <div class="per"></div>`;
+  item.querySelector(".size").value = size;
+  item.querySelector(".unit").value = unit;
+  itemsEl.append(item);
+  syncItems();
+  if (focus) item.querySelector(".price").focus();
+}
+
+/** Only sizes past the first two can be removed, and there's a limit to how many. */
+function syncItems() {
+  [...itemsEl.children].forEach((item, i) => {
+    const removable = i >= 2;
+    item.classList.toggle("removable", removable);
+    let x = item.querySelector(".remove");
+    if (removable && !x) {
+      x = document.createElement("button");
+      x.className = "remove";
+      x.type = "button";
+      x.textContent = "×";
+      x.setAttribute("aria-label", "Remove this size");
+      item.append(x);
+    } else if (!removable && x) x.remove();
+  });
+  addButton.hidden = itemsEl.children.length >= MAX_ITEMS;
+  compare();
+}
+
+function compare() {
+  const items = [...itemsEl.children].map((el) => {
+    const price = num(el.querySelector(".price").value);
+    const sizeRaw = el.querySelector(".size").value.trim();
+    const size = num(sizeRaw);
+    const unit = el.querySelector(".unit").value;
+    const { kind, base } = UNITS[unit];
+    const amount = size * base; // in the base unit
+    return { el, price, size, sizeRaw, unit, kind, amount, perBase: price / amount };
+  });
+
+  // each card's own price per unit
+  for (const it of items) {
+    it.el.classList.remove("best");
+    const per = it.el.querySelector(".per");
+    per.textContent = Number.isFinite(it.perBase)
+      ? `${unitMoney(it.perBase * UNITS[PER[it.kind]].base)} per ${PER[it.kind]}`
+      : "";
+  }
+
+  const ready = items.filter((it) => Number.isFinite(it.perBase));
+  resultEl.className = "";
+  if (ready.length < 2) {
+    resultEl.innerHTML = `<p class="hint">Enter ${ready.length ? "another" : "the"} price${ready.length ? "" : "s"} to see which is the better deal.</p>`;
+    return;
+  }
+  if (new Set(ready.map((it) => it.kind)).size > 1) {
+    resultEl.innerHTML = `<p class="hint">Those can't be compared: pick all volume, all weight, or all counts.</p>`;
+    return;
+  }
+
+  // name each by its size, unless two are the same size
+  const names = ready.map((it) => sizeText(it.sizeRaw, it.unit));
+  const label = (it) => {
+    const name = sizeText(it.sizeRaw, it.unit);
+    return names.filter((n) => n === name).length > 1 ? `the ${money(it.price)} ${name}` : `the ${name}`;
+  };
+
+  const sorted = [...ready].sort((a, b) => a.perBase - b.perBase);
+  const [best, next] = sorted;
+  const cheaper = 1 - best.perBase / next.perBase;
+  if (cheaper < 0.005) {
+    resultEl.innerHTML = `<p class="headline">It's a wash.</p>
+      <p class="detail">They cost about the same per ${PER[best.kind]}, so buy whichever size you'll use.</p>`;
+    return;
+  }
+  best.el.classList.add("best");
+  resultEl.className = "win";
+  // what the same amount as the best one would cost at the runner-up's rate
+  const sameAmount = next.perBase * best.amount;
+  const save = sameAmount - best.price;
+  const pct = Math.round(cheaper * 100) || "<1";
+  resultEl.innerHTML = `<p class="headline"><b>${cap(label(best))}</b> is the better deal, ${pct}% cheaper.</p>
+    <p class="detail">${cap(sizeText(best.sizeRaw, best.unit))} at ${label(next)} price would cost ${money(sameAmount)}. You save ${money(save)}.</p>`;
+}
+
+function cap(s) {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function reset() {
+  itemsEl.innerHTML = "";
+  for (const d of DEFAULTS) addItem(d);
+}
+
+itemsEl.addEventListener("input", compare);
+itemsEl.addEventListener("change", compare);
+itemsEl.addEventListener("click", (e) => {
+  const x = e.target.closest(".remove");
+  if (!x) return;
+  x.closest(".item").remove();
+  syncItems();
+});
+// select the whole price when tapping in, so typing replaces it
+itemsEl.addEventListener("focusin", (e) => {
+  if (e.target.matches("input")) e.target.select();
+});
+addButton.addEventListener("click", () => {
+  const last = itemsEl.lastElementChild;
+  addItem({ size: "", unit: last ? last.querySelector(".unit").value : "mL" }, true);
+});
+document.getElementById("reset").addEventListener("click", reset);
+
+reset();
+
+// works offline once it's been opened (see sw.js)
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+</script>
+</body>
+</html>
