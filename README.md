@@ -16,3 +16,14 @@ publishes it.
 
 When changing the files, bump `CACHE` in `sw.js`. Phones with it installed get the update the
 second time they open it (the first open still shows the saved copy).
+
+## Scanning a shelf tag
+
+The camera button beside each price takes a picture of the shelf tag and fills in the price, size
+and unit. The photo goes to a small Cloudflare Worker (`worker/`), which asks Claude Haiku to read
+it, checks the reading against the tag's printed unit price, and answers with JSON. The Worker holds
+the Anthropic API key as a secret, so it never appears in this public page. It only answers this
+site, and limits scans to 10 a minute per phone and 300 a day overall. Without signal, or if a
+scan fails, typing works as before.
+
+Worker: `cd worker && npm install && npm test && npm run deploy` (needs `npx wrangler login`).

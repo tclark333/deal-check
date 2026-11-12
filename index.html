@@ -96,6 +96,7 @@
   .item.best .badge { display: block; }
   .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
   .field span { font-size: 13px; color: var(--muted); font-weight: 600; }
+  .field > label { display: contents; }
   .row { display: flex; gap: 6px; min-width: 0; }
   input, select {
     font: inherit;
@@ -122,6 +123,39 @@
     pointer-events: none;
   }
   .money input { padding-left: 24px; }
+  .money { flex: 1; min-width: 0; }
+  .scan {
+    flex: none;
+    width: 48px;
+    border: 1.5px solid var(--accent);
+    border-radius: 10px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    display: grid;
+    place-items: center;
+    padding: 0;
+  }
+  .scan svg { width: 26px; height: 26px; }
+  .scan:disabled { opacity: 0.7; cursor: default; }
+  .scan.busy svg { display: none; }
+  .scan.busy::after {
+    content: "";
+    width: 22px;
+    height: 22px;
+    border: 3px solid var(--accent);
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .note {
+    grid-column: 1 / -1;
+    font-size: 15px;
+    margin-top: -4px;
+  }
+  .note.warn { color: #b3541e; font-weight: 600; }
+  @media (prefers-color-scheme: dark) { .note.warn { color: #f0a46b; } }
+  .note:empty { display: none; }
   .per {
     grid-column: 1 / -1;
     font-size: 15px;
@@ -176,6 +210,7 @@
   <div id="items"></div>
   <button id="add" type="button">+ Add another size</button>
   <section id="result" aria-live="polite"></section>
+  <input type="file" id="camera" accept="image/*" capture="environment" hidden>
 </main>
 <script>
 // Each unit as a multiple of its kind's base unit: mL for volume, g for weight, 1 for a count.
@@ -197,6 +232,9 @@ const DEFAULTS = [
   { size: "1.75", unit: "L" },
 ];
 const MAX_ITEMS = 4;
+// Reads a photo of a shelf tag (see worker/). Typing always works too.
+const SCAN_URL = "https://deal-check-scan.deal-check-scan.workers.dev";
+const CAMERA = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.5"/></svg>`;
 
 const itemsEl = document.getElementById("items");
 const resultEl = document.getElementById("result");
@@ -221,21 +259,28 @@ function sizeText(size, unit) {
   return `${size} ${unit}`;
 }
 
+let itemCount = 0;
+
 function addItem({ size, unit }, focus = false) {
+  const n = ++itemCount;
   const item = document.createElement("div");
   item.className = "item";
   item.innerHTML = `
     <div class="badge">BEST DEAL</div>
-    <label class="field"><span>Price</span>
-      <div class="money"><input class="price" inputmode="decimal" autocomplete="off" placeholder="0.00"></div>
-    </label>
+    <div class="field"><label for="price-${n}"><span>Price</span></label>
+      <div class="row">
+        <div class="money"><input class="price" id="price-${n}" inputmode="decimal" autocomplete="off" placeholder="0.00"></div>
+        <button class="scan" type="button" aria-label="Take a picture of the price tag">${CAMERA}</button>
+      </div>
+    </div>
     <label class="field"><span>Size</span>
       <div class="row">
         <input class="size" inputmode="decimal" autocomplete="off">
         <select class="unit" aria-label="Unit">${Object.keys(UNITS).map((u) => `<option>${u}</option>`).join("")}</select>
       </div>
     </label>
-    <div class="per"></div>`;
+    <div class="per"></div>
+    <div class="note" aria-live="polite"></div>`;
   item.querySelector(".size").value = size;
   item.querySelector(".unit").value = unit;
   itemsEl.append(item);
@@ -327,9 +372,21 @@ function reset() {
   for (const d of DEFAULTS) addItem(d);
 }
 
-itemsEl.addEventListener("input", compare);
-itemsEl.addEventListener("change", compare);
+// typing over a scanned value clears its note
+const edited = (e) => {
+  setNote(e.target.closest(".item"), "");
+  compare();
+};
+itemsEl.addEventListener("input", edited);
+itemsEl.addEventListener("change", edited);
 itemsEl.addEventListener("click", (e) => {
+  const scan = e.target.closest(".scan");
+  if (scan) {
+    scanning = scan.closest(".item");
+    camera.value = "";
+    camera.click();
+    return;
+  }
   const x = e.target.closest(".remove");
   if (!x) return;
   x.closest(".item").remove();
@@ -344,6 +401,97 @@ addButton.addEventListener("click", () => {
   addItem({ size: "", unit: last ? last.querySelector(".unit").value : "mL" }, true);
 });
 document.getElementById("reset").addEventListener("click", reset);
+
+// --- Scanning a shelf tag ---
+const camera = document.getElementById("camera");
+let scanning = null; // the item whose camera button was tapped
+
+function setNote(item, text, warn = false) {
+  if (!item) return;
+  const note = item.querySelector(".note");
+  note.textContent = text;
+  note.classList.toggle("warn", warn);
+}
+
+/** The photo, shrunk to at most 1568 px on its long side (plenty to read a tag) as a JPEG. */
+async function shrink(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    const scale = Math.min(1, 1568 / Math.max(img.naturalWidth, img.naturalHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(img.naturalWidth * scale);
+    canvas.height = Math.round(img.naturalHeight * scale);
+    canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+    return await new Promise((ok, fail) =>
+      canvas.toBlob((b) => (b ? ok(b) : fail(new Error("toBlob"))), "image/jpeg", 0.85));
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+const SCAN_ERRORS = {
+  busy: "Too many pictures at once. Wait a minute and try again.",
+  cap: "Picture reading is off for today. Type the numbers instead.",
+};
+
+function trimNum(n) {
+  return String(Math.round(n * 1000) / 1000);
+}
+
+camera.addEventListener("change", async () => {
+  const item = scanning;
+  const file = camera.files[0];
+  scanning = null;
+  if (!item || !file || !item.isConnected) return;
+  if (!navigator.onLine) {
+    setNote(item, "No signal right now. Type the numbers instead.", true);
+    return;
+  }
+  const button = item.querySelector(".scan");
+  button.disabled = true;
+  button.classList.add("busy");
+  setNote(item, "Reading the tag…");
+  try {
+    const photo = await shrink(file);
+    const res = await fetch(SCAN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "image/jpeg" },
+      body: photo,
+      signal: AbortSignal.timeout(30000),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!item.isConnected) return;
+    if (!res.ok) {
+      setNote(item, SCAN_ERRORS[data.error] || "Couldn't read that one. Try again, or type the numbers.", true);
+      return;
+    }
+    if (!data.found) {
+      setNote(item, "Couldn't find a price in that picture. Get closer to the tag and try again.", true);
+      return;
+    }
+    item.querySelector(".price").value = data.price.toFixed(2);
+    if (data.size && UNITS[data.unit]) {
+      item.querySelector(".size").value = trimNum(data.size);
+      item.querySelector(".unit").value = data.unit;
+    }
+    compare();
+    const parts = [];
+    if (data.note) parts.push(cap(data.note) + ".");
+    if (!data.size) parts.push("Couldn't read the size; type it in.");
+    else if (data.check === "estimated") parts.push("Size worked out from the tag's unit price.");
+    const warn = data.check === "mismatch" || !data.size;
+    if (data.check === "mismatch") parts.push("Check these: they don't match the tag's unit price.");
+    setNote(item, parts.join(" ") || "Read from the tag. Check it looks right.", warn);
+  } catch {
+    if (item.isConnected) setNote(item, "Couldn't reach the tag reader. Try again, or type the numbers.", true);
+  } finally {
+    button.disabled = false;
+    button.classList.remove("busy");
+  }
+});
 
 reset();
 

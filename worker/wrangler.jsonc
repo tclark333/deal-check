@@ -1,0 +1,15 @@
+{
+  // Deal Check's shelf-tag reader (see src/index.js). Deploy with `npm run deploy`.
+  // The Anthropic API key is the secret ANTHROPIC_API_KEY, set in the Cloudflare dashboard.
+  "name": "deal-check-scan",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": true,
+  "observability": { "enabled": true },
+  // Never wipe variables set in the dashboard on deploy (a plain-text key was lost that way 11/12).
+  "keep_vars": true,
+  // Today's scan count, for the daily cap.
+  "kv_namespaces": [{ "binding": "SCANS", "id": "c54089c056fe45d49380c861f8463893" }],
+  // 10 scans a minute per phone (by IP).
+  "ratelimits": [{ "name": "SCAN_LIMIT", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } }]
+}
