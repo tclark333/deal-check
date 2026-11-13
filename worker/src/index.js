@@ -17,6 +17,7 @@ const Tag = z.object({
   found: z.boolean(),
   price: z.number().nullable(),
   regular_price: z.number().nullable(),
+  buy_qty: z.number().nullable(),
   size: z.number().nullable(),
   unit: Unit.nullable(),
   unit_price: z.number().nullable(),
@@ -29,11 +30,12 @@ const SYSTEM = `You read store shelf tags (the price labels on shelves) from pho
 
 Fields:
 - found: false if no shelf tag with a readable price is in the photo; then set every other field to null.
-- price: dollars to buy one. If a sale, clearance, rollback or member/card price is shown, use that. For a multi-buy deal such as "2 for $5", give the price of one at the deal (2.50) and say so in note. Ignore deposits, CRV and bottle fees.
+- price: dollars to buy one. If a sale, clearance, rollback or member/card price is shown, use that. For a multi-buy deal such as "2 for $5", give the price of one at the deal (2.50). For buy one get one free (BOGO), give half the price of one. If a sale sign for the same item sits beside its shelf tag, the sale sign's deal is the price. A "save $X" amount is never the price. Ignore deposits, CRV and bottle fees.
+- buy_qty: how many you must buy to get that price, for a multi-buy or buy-one-get-one deal ("2 for $5" and BOGO are 2, "3 for $10" is 3); otherwise null.
 - regular_price: when price is a sale or deal price and the regular price is also shown, the regular price for one; otherwise null.
 - size and unit: the total contents of one purchase. Liquor and wine tags usually print it as 50ML, 375ML, 750ML, 1L or 1.75L. For a multipack, multiply it out (a 6-pack of 12 fl oz cans is 72 fl oz). Use "fl oz" for liquids measured in ounces and "oz" for weight. Use "ct" for things sold by count (eggs, rolls, pods, bags, tablets) when the tag gives a count rather than a volume or weight.
 - unit_price, unit_price_qty, unit_price_unit: the unit price printed on the tag, in dollars. "$0.25 per oz" is 0.25, 1, "oz". "12.3¢ / fl oz" is 0.123, 1, "fl oz". "$3.45 per 100 ct" is 3.45, 100, "ct". "$1.99/lb" is 1.99, 1, "lb". If the tag prints no unit price, all three are null.
-- note: at most five words, only about the deal itself, such as "2 for $5 deal", "member price" or "sale ends 11/20"; otherwise null. Never comment on the photo or on how sure you are.
+- note: at most five words, only about the deal itself, such as "2 for $5 deal", "buy 1 get 1 free", "member price" or "sale ends 11/20"; otherwise null. Never comment on the photo or on how sure you are.
 
 Never guess a number you can't read clearly: use null instead. If several tags are in the photo, use the one nearest the center.`;
 

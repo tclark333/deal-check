@@ -413,6 +413,17 @@ function compare() {
     resultEl.innerHTML = `<p class="hint">Enter ${ready.length ? "another" : "the"} price${ready.length ? "" : "s"} to see which is the better deal.</p>`;
     return;
   }
+  // Grocery tags print "OZ" on drinks too, so when ounces meet a volume, count them as fluid ounces.
+  let ozAsFlOz = "";
+  if (ready.some((it) => it.unit === "oz") && ready.some((it) => it.kind === "volume")
+      && ready.every((it) => it.kind === "volume" || it.unit === "oz")) {
+    for (const it of ready.filter((it) => it.unit === "oz")) {
+      it.kind = "volume";
+      it.amount = it.size * UNITS["fl oz"].base;
+      it.perBase = it.price / it.amount;
+    }
+    ozAsFlOz = " Counting oz as fl oz.";
+  }
   if (new Set(ready.map((it) => it.kind)).size > 1) {
     resultEl.innerHTML = `<p class="hint">Those can't be compared: pick all volume, all weight, or all counts.</p>`;
     return;
@@ -430,7 +441,7 @@ function compare() {
   const cheaper = 1 - best.perBase / next.perBase;
   if (cheaper < 0.005) {
     resultEl.innerHTML = `<p class="headline">It's a wash.</p>
-      <p class="detail">They cost about the same per ${PER[best.kind]}, so buy whichever size you'll use.</p>`;
+      <p class="detail">They cost about the same per ${PER[best.kind]}, so buy whichever size you'll use.${ozAsFlOz}</p>`;
     return;
   }
   best.el.classList.add("best");
@@ -440,7 +451,7 @@ function compare() {
   const save = sameAmount - best.price;
   const pct = Math.round(cheaper * 100) || "<1";
   resultEl.innerHTML = `<p class="headline"><b>${cap(label(best))}</b> is the better deal, ${pct}% cheaper.</p>
-    <p class="detail">${cap(sizeText(best.sizeRaw, best.unit))} at ${label(next)} price would cost ${money(sameAmount)}. You save ${money(save)}.</p>`;
+    <p class="detail">${cap(sizeText(best.sizeRaw, best.unit))} at ${label(next)} price would cost ${money(sameAmount)}. You save ${money(save)}.${ozAsFlOz}</p>`;
 }
 
 function cap(s) {
@@ -661,6 +672,7 @@ async function readPhoto(item, picture) {
     compare();
     const parts = [];
     if (data.note) parts.push(cap(data.note) + ".");
+    if (data.buy) parts.push(`That's the price each if you buy ${data.buy}.`);
     if (!data.size) parts.push("Couldn't read the size; type it in.");
     else if (data.check === "estimated") parts.push("Size worked out from the tag's unit price.");
     const warn = data.check === "mismatch" || !data.size;

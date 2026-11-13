@@ -24,7 +24,10 @@ and unit. It opens the camera inside the app: fit the tag in the box and tap any
 (plus a margin) is sent, at up to 1568 px. "Phone camera" in that view, or a browser that can't
 open the camera in a page or a refused camera permission, uses the phone's own camera app instead
 (that whole photo is shrunk to 1568 px). The photo goes to a small Cloudflare Worker (`worker/`), which asks Claude Haiku to read
-it, checks the reading against the tag's printed unit price, and answers with JSON. The Worker holds
+it, checks the reading against the tag's printed unit price, and answers with JSON. A "2 for $5" or
+buy-one-get-one deal comes back as the price of one at the deal, with a note saying how many to buy.
+Grocery tags print "OZ" on drinks too, so when ounces are compared with a volume (fl oz, mL, L)
+the app counts them as fluid ounces and says so. The Worker holds
 the Anthropic API key as a secret, so it never appears in this public page. It only answers this
 site, and limits scans to 10 a minute per phone and 300 a day overall. Without signal, or if a
 scan fails, typing works as before.

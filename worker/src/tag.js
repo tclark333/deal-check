@@ -18,6 +18,8 @@ export const UNIT_NAMES = Object.keys(UNITS);
 // Tags round their unit price (often to a tenth of a cent), so allow some slack.
 const TOLERANCE = 0.06;
 
+const OUNCES = new Set(["oz", "fl oz"]);
+
 const positive = (n) => (typeof n === "number" && Number.isFinite(n) && n > 0 ? n : null);
 const unit = (u) => (UNIT_NAMES.includes(u) ? u : null);
 
@@ -35,6 +37,7 @@ function roundSize(n) {
  * Cleans the model's reading and cross-checks it against the tag's own unit price.
  * `check` is "ok" (it matches), "mismatch" (price or size is probably misread),
  * "estimated" (the size was worked out from the unit price) or null (nothing to check against).
+ * `buy` is how many must be bought for that price (a "2 for $5" or buy-one-get-one deal), or null.
  */
 export function finish(tag) {
   if (!tag || !tag.found || !positive(tag.price)) {
@@ -48,8 +51,10 @@ export function finish(tag) {
     size = null;
     u = null;
   }
-  const tagRate = perBase(positive(tag.unit_price), positive(tag.unit_price_qty) ?? 1, unit(tag.unit_price_unit));
-  const tagUnit = unit(tag.unit_price_unit);
+  let tagUnit = unit(tag.unit_price_unit);
+  // Grocery tags print "OZ" on drinks too, so an ounce is an ounce either way.
+  if (u && tagUnit && u !== tagUnit && OUNCES.has(u) && OUNCES.has(tagUnit)) tagUnit = u;
+  const tagRate = perBase(positive(tag.unit_price), positive(tag.unit_price_qty) ?? 1, tagUnit);
 
   let check = null;
   if (tagRate && size && UNITS[u].kind === UNITS[tagUnit].kind) {
@@ -64,7 +69,9 @@ export function finish(tag) {
   }
 
   const note = typeof tag.note === "string" && tag.note.trim() ? tag.note.trim().slice(0, 80) : null;
-  return { found: true, price, size, unit: u, note, check };
+  // how many to buy for that price (multi-buy and buy-one-get-one deals)
+  const buy = Number.isInteger(tag.buy_qty) && tag.buy_qty >= 2 && tag.buy_qty <= 12 ? tag.buy_qty : null;
+  return { found: true, price, size, unit: u, note, check, buy };
 }
 
 /** Base64 of a byte array, without Node's Buffer. */

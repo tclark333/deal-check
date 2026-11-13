@@ -1,7 +1,7 @@
 // Keeps the app working offline (stores often have poor signal). Serves the saved copy straight
 // away and refreshes it in the background, so an update shows up the time after it's published.
 // Bump CACHE when the list of files changes.
-const CACHE = "deal-check-v4";
+const CACHE = "deal-check-v5";
 const FILES = ["./", "index.html", "manifest.webmanifest", "icon.svg", "icon-180.png", "icon-192.png", "icon-512.png"];
 
 self.addEventListener("install", (e) => {

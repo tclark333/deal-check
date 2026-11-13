@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { finish, toBase64 } from "../src/tag.js";
 
 const blank = { found: true, price: null, regular_price: null, size: null, unit: null,
-  unit_price: null, unit_price_qty: null, unit_price_unit: null, note: null };
+  unit_price: null, unit_price_qty: null, unit_price_unit: null, note: null, buy_qty: null };
 const tag = (o) => ({ ...blank, ...o });
 
 test("nothing found", () => {
@@ -14,7 +14,7 @@ test("nothing found", () => {
 
 test("liquor tag with no unit price", () => {
   assert.deepEqual(finish(tag({ price: 24.99, size: 1.75, unit: "L" })),
-    { found: true, price: 24.99, size: 1.75, unit: "L", note: null, check: null });
+    { found: true, price: 24.99, size: 1.75, unit: "L", note: null, check: null, buy: null });
 });
 
 test("unit price matches", () => {
@@ -58,7 +58,21 @@ test("different kinds aren't compared", () => {
 
 test("junk is cleaned", () => {
   const r = finish(tag({ price: 4.999, size: -1, unit: "pints", note: "  member price  " }));
-  assert.deepEqual(r, { found: true, price: 5, size: null, unit: null, note: "member price", check: null });
+  assert.deepEqual(r, { found: true, price: 5, size: null, unit: null, note: "member price", check: null, buy: null });
+});
+
+test("buy one get one free", () => {
+  // $8.99 BOGO for a 16 oz box: $4.50 each when you buy 2, tag says 28.1 cents per oz
+  const r = finish(tag({ price: 4.495, regular_price: 8.99, size: 16, unit: "oz", unit_price: 0.281, unit_price_unit: "oz", buy_qty: 2 }));
+  assert.deepEqual([r.price, r.check, r.buy], [4.5, "ok", 2]);
+  assert.equal(finish(tag({ price: 3, buy_qty: 1 })).buy, null);
+  assert.equal(finish(tag({ price: 3, buy_qty: 2.5 })).buy, null);
+});
+
+test("oz and fl oz check against each other", () => {
+  // a drink tag that prints "22.42 cents per oz" read as 12 fl oz at $2.69
+  const r = finish(tag({ price: 2.69, size: 12, unit: "fl oz", unit_price: 0.2242, unit_price_unit: "oz" }));
+  assert.equal(r.check, "ok");
 });
 
 test("base64 matches Node's", () => {
