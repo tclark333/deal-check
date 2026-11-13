@@ -199,6 +199,78 @@
   #result .headline b { color: var(--accent); }
   #result .detail { margin: 6px 0 0; color: var(--muted); }
   #result .hint { margin: 0; color: var(--muted); }
+
+  /* the in-app camera: the live view, a box to fit the tag in, tap anywhere to take it */
+  #viewfinder {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    background: #000;
+    color: #fff;
+    overflow: hidden;
+    touch-action: none;
+  }
+  #viewfinder[hidden] { display: none; }
+  #viewfinder video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  #viewfinder .frame {
+    position: absolute;
+    left: 7%;
+    width: 86%;
+    top: 42%;
+    transform: translateY(-50%);
+    aspect-ratio: 4 / 3;
+    border: 3px solid #fff;
+    border-radius: 14px;
+    box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.45);
+    pointer-events: none;
+  }
+  #viewfinder .hint {
+    position: absolute;
+    left: 52px;
+    right: 52px;
+    top: max(16px, env(safe-area-inset-top));
+    margin: 0;
+    text-align: center;
+    font-weight: 600;
+    text-shadow: 0 1px 3px #000;
+    pointer-events: none;
+  }
+  #viewfinder .shutter {
+    position: absolute;
+    left: 50%;
+    bottom: max(28px, env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    width: 76px;
+    height: 76px;
+    border-radius: 50%;
+    border: 5px solid #fff;
+    background: rgba(255, 255, 255, 0.35);
+    padding: 0;
+  }
+  #viewfinder .close {
+    position: absolute;
+    top: max(8px, env(safe-area-inset-top));
+    right: 8px;
+    border: 0;
+    background: none;
+    color: #fff;
+    font-size: 34px;
+    line-height: 1;
+    padding: 8px 12px;
+    text-shadow: 0 1px 3px #000;
+  }
+  #viewfinder .other {
+    position: absolute;
+    right: 12px;
+    bottom: max(46px, calc(env(safe-area-inset-bottom) + 18px));
+    border: 0;
+    background: none;
+    color: #fff;
+    font-size: 15px;
+    text-decoration: underline;
+    padding: 8px 4px;
+    text-shadow: 0 1px 3px #000;
+  }
 </style>
 </head>
 <body>
@@ -212,6 +284,14 @@
   <section id="result" aria-live="polite"></section>
   <input type="file" id="camera" accept="image/*" capture="environment" hidden>
 </main>
+<div id="viewfinder" hidden>
+  <video playsinline muted autoplay></video>
+  <div class="frame"></div>
+  <p class="hint">Starting the camera…</p>
+  <button class="close" type="button" aria-label="Close the camera">×</button>
+  <button class="shutter" type="button" aria-label="Take the picture"></button>
+  <button class="other" type="button">Phone camera</button>
+</div>
 <script>
 // Each unit as a multiple of its kind's base unit: mL for volume, g for weight, 1 for a count.
 const UNITS = {
@@ -383,8 +463,8 @@ itemsEl.addEventListener("click", (e) => {
   const scan = e.target.closest(".scan");
   if (scan) {
     scanning = scan.closest(".item");
-    camera.value = "";
-    camera.click();
+    if (liveCamera) openViewfinder();
+    else phoneCamera();
     return;
   }
   const x = e.target.closest(".remove");
@@ -403,8 +483,104 @@ addButton.addEventListener("click", () => {
 document.getElementById("reset").addEventListener("click", reset);
 
 // --- Scanning a shelf tag ---
+// The camera opens inside the app (one tap to take the picture, no confirm screen) and only the
+// box the tag is fitted into is sent. If the browser can't do that or the camera is refused,
+// it falls back to the phone's own camera app (the hidden file input).
 const camera = document.getElementById("camera");
+const viewfinder = document.getElementById("viewfinder");
+const video = viewfinder.querySelector("video");
+const frame = viewfinder.querySelector(".frame");
+const vfHint = viewfinder.querySelector(".hint");
+const MAX_SIDE = 1000; // px on the long side of what's sent; plenty for a tag that fills it
+const PHOTO_SIDE = 1568; // a whole phone-camera photo, where the tag is a smaller part of it
+let liveCamera = !!navigator.mediaDevices?.getUserMedia;
 let scanning = null; // the item whose camera button was tapped
+let stream = null;
+
+function phoneCamera() {
+  camera.value = "";
+  camera.click();
+}
+
+async function openViewfinder() {
+  viewfinder.hidden = false;
+  viewfinder.classList.remove("ready");
+  vfHint.textContent = "Starting the camera…";
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+    });
+    if (viewfinder.hidden) {
+      // closed while it was starting
+      s.getTracks().forEach((t) => t.stop());
+      return;
+    }
+    stream = s;
+    video.srcObject = s;
+    await video.play();
+    viewfinder.classList.add("ready");
+    vfHint.textContent = "Fit the tag in the box, then tap";
+  } catch {
+    if (viewfinder.hidden) return; // closed while it was starting
+    // no camera access: use the phone's camera app from now on
+    closeViewfinder();
+    liveCamera = false;
+    phoneCamera();
+  }
+}
+
+function closeViewfinder() {
+  viewfinder.hidden = true;
+  viewfinder.classList.remove("ready");
+  if (stream) stream.getTracks().forEach((t) => t.stop());
+  stream = null;
+  video.srcObject = null;
+}
+
+/** Takes the part of the live view inside the box (plus a margin) and reads it. */
+function snap() {
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  if (!viewfinder.classList.contains("ready") || !vw || !vh) return;
+  // the video fills the screen (object-fit: cover), so map the box from screen to video pixels
+  const v = video.getBoundingClientRect();
+  const f = frame.getBoundingClientRect();
+  const scale = Math.max(v.width / vw, v.height / vh);
+  const offX = (v.width - vw * scale) / 2;
+  const offY = (v.height - vh * scale) / 2;
+  const pad = f.width * 0.08;
+  const sx = Math.max(0, (f.left - pad - v.left - offX) / scale);
+  const sy = Math.max(0, (f.top - pad - v.top - offY) / scale);
+  const sw = Math.min(vw - sx, (f.width + 2 * pad) / scale);
+  const sh = Math.min(vh - sy, (f.height + 2 * pad) / scale);
+  const s = Math.min(1, MAX_SIDE / Math.max(sw, sh));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(sw * s);
+  canvas.height = Math.round(sh * s);
+  canvas.getContext("2d").drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  const item = scanning;
+  scanning = null;
+  closeViewfinder();
+  canvas.toBlob((b) => readPhoto(item, b), "image/jpeg", 0.85);
+}
+
+viewfinder.addEventListener("click", (e) => {
+  if (e.target.closest(".close")) {
+    scanning = null;
+    closeViewfinder();
+  } else if (e.target.closest(".other")) {
+    closeViewfinder();
+    phoneCamera();
+  } else snap();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !viewfinder.hidden) closeViewfinder();
+});
+// don't leave the camera running if the app is switched away from
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && !viewfinder.hidden) closeViewfinder();
+});
 
 function setNote(item, text, warn = false) {
   if (!item) return;
@@ -413,14 +589,14 @@ function setNote(item, text, warn = false) {
   note.classList.toggle("warn", warn);
 }
 
-/** The photo, shrunk to at most 1568 px on its long side (plenty to read a tag) as a JPEG. */
+/** A phone-camera photo, shrunk to at most PHOTO_SIDE px on its long side, as a JPEG. */
 async function shrink(file) {
   const url = URL.createObjectURL(file);
   try {
     const img = new Image();
     img.src = url;
     await img.decode();
-    const scale = Math.min(1, 1568 / Math.max(img.naturalWidth, img.naturalHeight));
+    const scale = Math.min(1, PHOTO_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
     const canvas = document.createElement("canvas");
     canvas.width = Math.round(img.naturalWidth * scale);
     canvas.height = Math.round(img.naturalHeight * scale);
@@ -441,11 +617,16 @@ function trimNum(n) {
   return String(Math.round(n * 1000) / 1000);
 }
 
-camera.addEventListener("change", async () => {
+camera.addEventListener("change", () => {
   const item = scanning;
   const file = camera.files[0];
   scanning = null;
-  if (!item || !file || !item.isConnected) return;
+  if (file) readPhoto(item, file);
+});
+
+/** Sends a picture of a tag (a Blob, or a File from the phone camera) and fills in the card. */
+async function readPhoto(item, picture) {
+  if (!item || !picture || !item.isConnected) return;
   if (!navigator.onLine) {
     setNote(item, "No signal right now. Type the numbers instead.", true);
     return;
@@ -455,7 +636,7 @@ camera.addEventListener("change", async () => {
   button.classList.add("busy");
   setNote(item, "Reading the tag…");
   try {
-    const photo = await shrink(file);
+    const photo = picture instanceof File ? await shrink(picture) : picture;
     const res = await fetch(SCAN_URL, {
       method: "POST",
       headers: { "Content-Type": "image/jpeg" },
@@ -491,7 +672,7 @@ camera.addEventListener("change", async () => {
     button.disabled = false;
     button.classList.remove("busy");
   }
-});
+}
 
 reset();
 

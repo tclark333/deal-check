@@ -20,7 +20,10 @@ second time they open it (the first open still shows the saved copy).
 ## Scanning a shelf tag
 
 The camera button beside each price takes a picture of the shelf tag and fills in the price, size
-and unit. The photo goes to a small Cloudflare Worker (`worker/`), which asks Claude Haiku to read
+and unit. It opens the camera inside the app: fit the tag in the box and tap anywhere. Only the box
+(plus a margin, at most 1000 px) is sent. "Phone camera" in that view, or a browser that can't
+open the camera in a page or a refused camera permission, uses the phone's own camera app instead
+(that whole photo is shrunk to 1568 px). The photo goes to a small Cloudflare Worker (`worker/`), which asks Claude Haiku to read
 it, checks the reading against the tag's printed unit price, and answers with JSON. The Worker holds
 the Anthropic API key as a secret, so it never appears in this public page. It only answers this
 site, and limits scans to 10 a minute per phone and 300 a day overall. Without signal, or if a
