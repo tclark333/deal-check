@@ -491,8 +491,8 @@ const viewfinder = document.getElementById("viewfinder");
 const video = viewfinder.querySelector("video");
 const frame = viewfinder.querySelector(".frame");
 const vfHint = viewfinder.querySelector(".hint");
-const MAX_SIDE = 1000; // px on the long side of what's sent; plenty for a tag that fills it
-const PHOTO_SIDE = 1568; // a whole phone-camera photo, where the tag is a smaller part of it
+// Pictures go out at up to 1568 px on the long side (11/13: Thomas got worse reads at 1000 px).
+const MAX_SIDE = 1568;
 let liveCamera = !!navigator.mediaDevices?.getUserMedia;
 let scanning = null; // the item whose camera button was tapped
 let stream = null;
@@ -509,7 +509,7 @@ async function openViewfinder() {
   try {
     const s = await navigator.mediaDevices.getUserMedia({
       audio: false,
-      video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 3840 }, height: { ideal: 2160 } },
     });
     if (viewfinder.hidden) {
       // closed while it was starting
@@ -589,14 +589,14 @@ function setNote(item, text, warn = false) {
   note.classList.toggle("warn", warn);
 }
 
-/** A phone-camera photo, shrunk to at most PHOTO_SIDE px on its long side, as a JPEG. */
+/** A phone-camera photo, shrunk to at most MAX_SIDE px on its long side, as a JPEG. */
 async function shrink(file) {
   const url = URL.createObjectURL(file);
   try {
     const img = new Image();
     img.src = url;
     await img.decode();
-    const scale = Math.min(1, PHOTO_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+    const scale = Math.min(1, MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
     const canvas = document.createElement("canvas");
     canvas.width = Math.round(img.naturalWidth * scale);
     canvas.height = Math.round(img.naturalHeight * scale);
