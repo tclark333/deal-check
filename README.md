@@ -23,7 +23,7 @@ The camera button beside each price takes a picture of the shelf tag and fills i
 and unit. It opens the camera inside the app: fit the tag in the box and tap anywhere. Only the box
 (plus a margin) is sent, at up to 1568 px. "Phone camera" in that view, or a browser that can't
 open the camera in a page or a refused camera permission, uses the phone's own camera app instead
-(that whole photo is shrunk to 1568 px). The photo goes to a small Cloudflare Worker (`worker/`), which asks Claude Haiku to read
+(that whole photo is shrunk to 1568 px). "Scan several tags" above the cards keeps the camera open: each tap reads the next tag into the next card (the first tap starts a fresh comparison), up to four, and "Done" closes it. Each tag is still its own full-detail picture. Without the in-app camera, each press of it reads one tag into the next empty card. The photo goes to a small Cloudflare Worker (`worker/`), which asks Claude Haiku to read
 it, checks the reading against the tag's printed unit price, and answers with JSON. A "2 for $5" or
 buy-one-get-one deal comes back as the price of one at the deal, with a note saying how many to buy.
 Grocery tags print "OZ" on drinks too, so when ounces are compared with a volume (fl oz, mL, L)
