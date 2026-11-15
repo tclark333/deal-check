@@ -19,11 +19,18 @@ second time they open it (the first open still shows the saved copy).
 
 ## Scanning a shelf tag
 
-The camera button beside each price takes a picture of the shelf tag and fills in the price, size
-and unit. It opens the camera inside the app: fit the tag in the box and tap anywhere. Only the box
-(plus a margin) is sent, at up to 1568 px. "Phone camera" in that view, or a browser that can't
-open the camera in a page or a refused camera permission, uses the phone's own camera app instead
-(that whole photo is shrunk to 1568 px). "Scan several tags" above the cards keeps the camera open: each tap reads the next tag into the next card (the first tap starts a fresh comparison), up to four, and "Done" closes it. Each tag is still its own full-detail picture. Without the in-app camera, each press of it reads one tag into the next empty card. The photo goes to a small Cloudflare Worker (`worker/`), which asks Claude Haiku to read
+"Scan tags" above the cards is the one camera button. It opens the camera inside the app and keeps
+it open: fit a shelf tag in the box and tap anywhere, and its price, size and unit go into the next
+card. Tap again for the next tag (up to four), and "Done" closes it; one tag is one tap and Done.
+Only the box (plus a margin) is sent, at up to 1568 px, so each tag is its own full-detail picture.
+
+Where a scan starts: if some cards have a price and some don't, it fills the ones without, so a bad
+read is redone by clearing that price and scanning again, and one price can be typed while the other
+is scanned. If every card has a price (or none does), the first tap starts a fresh comparison.
+
+"Phone camera" in the camera view, or a browser that can't open the camera in a page or a refused
+camera permission, uses the phone's own camera app instead, one tag per press (that whole photo is
+shrunk to 1568 px). The photo goes to a small Cloudflare Worker (`worker/`), which asks Claude Haiku to read
 it, checks the reading against the tag's printed unit price, and answers with JSON. A "2 for $5" or
 buy-one-get-one deal comes back as the price of one at the deal, with a note saying how many to buy.
 Grocery tags print "OZ" on drinks too, so when ounces are compared with a volume (fl oz, mL, L)

@@ -67,8 +67,8 @@
     padding: 8px 4px;
   }
 
-  /* scan several tags in a row, one tap each, without closing the camera */
-  #scan-all {
+  /* the one camera button: scan one tag or several in a row, one tap each */
+  #scan {
     width: 100%;
     margin-bottom: 14px;
     display: flex;
@@ -82,7 +82,7 @@
     font-weight: 700;
     padding: 12px;
   }
-  #scan-all svg { width: 24px; height: 24px; flex: none; }
+  #scan svg { width: 24px; height: 24px; flex: none; }
 
   /* one card per size */
   #items { display: flex; flex-direction: column; gap: 10px; }
@@ -140,26 +140,15 @@
     pointer-events: none;
   }
   .money input { padding-left: 24px; }
-  .money { flex: 1; min-width: 0; }
-  .scan {
-    flex: none;
-    width: 48px;
-    border: 1.5px solid var(--accent);
-    border-radius: 10px;
-    background: var(--accent-soft);
-    color: var(--accent);
-    display: grid;
-    place-items: center;
-    padding: 0;
-  }
-  .scan svg { width: 26px; height: 26px; }
-  .scan:disabled { opacity: 0.7; cursor: default; }
-  .scan.busy svg { display: none; }
-  .scan.busy::after {
+  /* a card whose tag picture is still being read */
+  .item.reading .note::before {
     content: "";
-    width: 22px;
-    height: 22px;
-    border: 3px solid var(--accent);
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    margin-right: 6px;
+    vertical-align: -2px;
+    border: 2px solid var(--accent);
     border-right-color: transparent;
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
@@ -278,7 +267,7 @@
   }
   #viewfinder .other {
     position: absolute;
-    right: 12px;
+    left: 12px;
     bottom: max(46px, calc(env(safe-area-inset-bottom) + 18px));
     border: 0;
     background: none;
@@ -289,7 +278,6 @@
     text-shadow: 0 1px 3px #000;
   }
   #viewfinder .done {
-    display: none;
     position: absolute;
     right: 12px;
     bottom: max(40px, calc(env(safe-area-inset-bottom) + 12px));
@@ -301,8 +289,6 @@
     font-weight: 700;
     padding: 10px 18px;
   }
-  #viewfinder.multi .done { display: block; }
-  #viewfinder.multi .other { display: none; }
   #viewfinder .frame.flash { animation: flash 0.35s ease-out; }
   @keyframes flash { from { background: rgba(255, 255, 255, 0.75); } to { background: transparent; } }
 </style>
@@ -313,7 +299,7 @@
     <h1>Deal Check</h1>
     <button class="link" id="reset" type="button">Reset</button>
   </header>
-  <button id="scan-all" type="button"></button>
+  <button id="scan" type="button"></button>
   <div id="items"></div>
   <button id="add" type="button">+ Add another size</button>
   <section id="result" aria-live="polite"></section>
@@ -384,10 +370,7 @@ function addItem({ size, unit }, focus = false) {
   item.innerHTML = `
     <div class="badge">BEST DEAL</div>
     <div class="field"><label for="price-${n}"><span>Price</span></label>
-      <div class="row">
-        <div class="money"><input class="price" id="price-${n}" inputmode="decimal" autocomplete="off" placeholder="0.00"></div>
-        <button class="scan" type="button" aria-label="Take a picture of the price tag">${CAMERA}</button>
-      </div>
+      <div class="money"><input class="price" id="price-${n}" inputmode="decimal" autocomplete="off" placeholder="0.00"></div>
     </div>
     <label class="field"><span>Size</span>
       <div class="row">
@@ -507,13 +490,6 @@ const edited = (e) => {
 itemsEl.addEventListener("input", edited);
 itemsEl.addEventListener("change", edited);
 itemsEl.addEventListener("click", (e) => {
-  const scan = e.target.closest(".scan");
-  if (scan) {
-    scanning = scan.closest(".item");
-    if (liveCamera) openViewfinder();
-    else phoneCamera();
-    return;
-  }
   const x = e.target.closest(".remove");
   if (!x) return;
   x.closest(".item").remove();
@@ -529,10 +505,13 @@ addButton.addEventListener("click", () => {
 });
 document.getElementById("reset").addEventListener("click", reset);
 
-// --- Scanning a shelf tag ---
-// The camera opens inside the app (one tap to take the picture, no confirm screen) and only the
-// box the tag is fitted into is sent. If the browser can't do that or the camera is refused,
-// it falls back to the phone's own camera app (the hidden file input).
+// --- Scanning shelf tags ---
+// One button. The camera opens inside the app and stays open: each tap reads the tag in the box
+// into the next card (no confirm screen; only the box is sent) until "Done". If the browser can't
+// do that or the camera is refused, it falls back to the phone's own camera app (the hidden file
+// input), one tag per press.
+// Where a scan starts: if some cards have a price and some don't, it fills the ones without
+// (redo a bad read, or type one and scan the other). Otherwise it's a new comparison.
 const camera = document.getElementById("camera");
 const viewfinder = document.getElementById("viewfinder");
 const video = viewfinder.querySelector("video");
@@ -541,60 +520,70 @@ const vfHint = viewfinder.querySelector(".hint");
 // Pictures go out at up to 1568 px on the long side (11/13: Thomas got worse reads at 1000 px).
 const MAX_SIDE = 1568;
 let liveCamera = !!navigator.mediaDevices?.getUserMedia;
-let scanning = null; // the item whose camera button was tapped
-let multi = null; // while scanning several tags in a row: { taken, last }
+let multi = null; // while the in-app camera is open: { taken, last }
+let phoneLater = false; // the phone-camera photo follows tags already taken in this scan
 let stream = null;
-const scanAll = document.getElementById("scan-all");
-scanAll.innerHTML = `${CAMERA}<span>Scan several tags</span>`;
+const scanButton = document.getElementById("scan");
+scanButton.innerHTML = `${CAMERA}<span>Scan tags</span>`;
 
-// Several tags: the camera stays open and each tap reads the next tag into the next card.
-scanAll.addEventListener("click", () => {
-  if (liveCamera) {
-    scanning = null;
-    multi = { taken: 0, last: 0 };
-    openViewfinder();
-  } else {
-    // no in-app camera: each press reads one tag into the next empty card
-    scanning = nextEmpty();
-    phoneCamera();
-  }
+scanButton.addEventListener("click", () => {
+  if (liveCamera) openViewfinder();
+  else phoneCamera(false);
 });
 
-/** The first card with no price, a new card if there's room, or else the first card. */
-function nextEmpty() {
-  const empty = [...itemsEl.children].find((el) => !el.querySelector(".price").value.trim());
-  if (empty) return empty;
-  if (itemsEl.children.length < MAX_ITEMS) {
-    addItem({ size: "", unit: itemsEl.lastElementChild.querySelector(".unit").value });
-    return itemsEl.lastElementChild;
-  }
+/** No price yet, and no picture on its way. */
+function isBlank(el) {
+  return !el.querySelector(".price").value.trim() && !el.classList.contains("reading");
+}
+
+/**
+ * The card for the first tag of a scan. Some cards priced and some not: the first one without.
+ * All priced, or none: a new comparison.
+ */
+function firstTarget() {
+  const cards = [...itemsEl.children];
+  const blank = cards.filter(isBlank);
+  if (blank.length && blank.length < cards.length) return blank[0];
+  clearCards();
   return itemsEl.firstElementChild;
 }
 
-/** A new comparison: back to two blank cards (units kept). */
+/** The card for a later tag in the same scan: the next without a price, a new one, or null when full. */
+function laterTarget() {
+  const blank = [...itemsEl.children].find(isBlank);
+  if (blank) return blank;
+  if (itemsEl.children.length >= MAX_ITEMS) return null;
+  addItem({ size: "", unit: itemsEl.lastElementChild.querySelector(".unit").value });
+  return itemsEl.lastElementChild;
+}
+
+/** A new comparison: back to two blank cards (units kept). Readings still on their way are dropped. */
 function clearCards() {
   while (itemsEl.children.length > 2) itemsEl.lastElementChild.remove();
   for (const el of itemsEl.children) {
     el.querySelector(".price").value = "";
     el.querySelector(".size").value = "";
+    el.readId = (el.readId || 0) + 1;
+    el.classList.remove("reading");
     setNote(el, "");
   }
   syncItems();
 }
 
 function readyHint() {
-  return multi ? `Tag ${multi.taken + 1}: fit it in the box, then tap` : "Fit the tag in the box, then tap";
+  return `Tag ${multi.taken + 1}: fit it in the box, then tap`;
 }
 
-function phoneCamera() {
+function phoneCamera(later) {
+  phoneLater = later;
   camera.value = "";
   camera.click();
 }
 
 async function openViewfinder() {
+  multi = { taken: 0, last: 0 };
   viewfinder.hidden = false;
   viewfinder.classList.remove("ready");
-  viewfinder.classList.toggle("multi", !!multi);
   vfHint.textContent = "Starting the camera…";
   try {
     const s = await navigator.mediaDevices.getUserMedia({
@@ -614,18 +603,16 @@ async function openViewfinder() {
   } catch {
     if (viewfinder.hidden) return; // closed while it was starting
     // no camera access: use the phone's camera app from now on
-    const several = !!multi;
     closeViewfinder();
     liveCamera = false;
-    if (several) scanning = nextEmpty();
-    phoneCamera();
+    phoneCamera(false);
   }
 }
 
 function closeViewfinder() {
   viewfinder.hidden = true;
   multi = null;
-  viewfinder.classList.remove("ready", "multi");
+  viewfinder.classList.remove("ready");
   if (stream) stream.getTracks().forEach((t) => t.stop());
   stream = null;
   video.srcObject = null;
@@ -634,30 +621,24 @@ function closeViewfinder() {
 /** Takes the part of the live view inside the box (plus a margin) and reads it. */
 function snap() {
   const canvas = grabBox();
-  if (!canvas) return;
-  if (multi) {
-    takeNext(canvas);
-    return;
-  }
-  const item = scanning;
-  scanning = null;
-  closeViewfinder();
-  canvas.toBlob((b) => readPhoto(item, b), "image/jpeg", 0.85);
+  if (canvas) takeNext(canvas);
 }
 
-/** Several tags: read this one into the next card and keep the camera open for the next. */
+/** Read this tag into the next card and keep the camera open for the next one. */
 function takeNext(canvas) {
   const now = Date.now();
   if (now - multi.last < 700) return; // a double tap isn't two tags
   multi.last = now;
-  if (multi.taken === 0) clearCards();
-  if (multi.taken >= itemsEl.children.length) {
-    addItem({ size: "", unit: itemsEl.lastElementChild.querySelector(".unit").value });
+  const item = multi.taken === 0 ? firstTarget() : laterTarget();
+  if (!item) {
+    closeViewfinder();
+    return;
   }
-  const item = itemsEl.children[multi.taken];
   multi.taken++;
+  item.classList.add("reading"); // taken, so the next tag goes to another card
   canvas.toBlob((b) => readPhoto(item, b), "image/jpeg", 0.85);
-  if (multi.taken >= MAX_ITEMS) {
+  // nowhere left to put another tag: close
+  if (itemsEl.children.length >= MAX_ITEMS && ![...itemsEl.children].some(isBlank)) {
     closeViewfinder();
     return;
   }
@@ -693,12 +674,11 @@ function grabBox() {
 }
 
 viewfinder.addEventListener("click", (e) => {
-  if (e.target.closest(".close, .done")) {
-    scanning = null;
+  if (e.target.closest(".close, .done")) closeViewfinder();
+  else if (e.target.closest(".other")) {
+    const later = multi?.taken > 0;
     closeViewfinder();
-  } else if (e.target.closest(".other")) {
-    closeViewfinder();
-    phoneCamera();
+    phoneCamera(later);
   } else snap();
 });
 document.addEventListener("keydown", (e) => {
@@ -745,24 +725,24 @@ function trimNum(n) {
 }
 
 camera.addEventListener("change", () => {
-  const item = scanning;
   const file = camera.files[0];
-  scanning = null;
-  if (file) readPhoto(item, file);
+  if (file) readPhoto((phoneLater && laterTarget()) || firstTarget(), file);
 });
 
 /** Sends a picture of a tag (a Blob, or a File from the phone camera) and fills in the card. */
 async function readPhoto(item, picture) {
-  if (!item || !picture || !item.isConnected) return;
-  if (!navigator.onLine) {
-    setNote(item, "No signal right now. Type the numbers instead.", true);
-    return;
-  }
-  const button = item.querySelector(".scan");
-  button.disabled = true;
-  button.classList.add("busy");
-  setNote(item, "Reading the tag…");
+  if (!item) return;
+  // a newer reading for this card, or a new comparison, drops this one
+  const id = (item.readId = (item.readId || 0) + 1);
+  const mine = () => item.isConnected && item.readId === id;
+  item.classList.add("reading");
   try {
+    if (!picture || !item.isConnected) return;
+    if (!navigator.onLine) {
+      setNote(item, "No signal right now. Type the numbers instead.", true);
+      return;
+    }
+    setNote(item, "Reading the tag…");
     const photo = picture instanceof File ? await shrink(picture) : picture;
     const res = await fetch(SCAN_URL, {
       method: "POST",
@@ -771,7 +751,7 @@ async function readPhoto(item, picture) {
       signal: AbortSignal.timeout(30000),
     });
     const data = await res.json().catch(() => ({}));
-    if (!item.isConnected) return;
+    if (!mine()) return;
     if (!res.ok) {
       setNote(item, SCAN_ERRORS[data.error] || "Couldn't read that one. Try again, or type the numbers.", true);
       return;
@@ -795,10 +775,9 @@ async function readPhoto(item, picture) {
     if (data.check === "mismatch") parts.push("Check these: they don't match the tag's unit price.");
     setNote(item, parts.join(" ") || "Read from the tag. Check it looks right.", warn);
   } catch {
-    if (item.isConnected) setNote(item, "Couldn't reach the tag reader. Try again, or type the numbers.", true);
+    if (mine()) setNote(item, "Couldn't reach the tag reader. Try again, or type the numbers.", true);
   } finally {
-    button.disabled = false;
-    button.classList.remove("busy");
+    if (item.readId === id) item.classList.remove("reading");
   }
 }
 
