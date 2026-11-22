@@ -39,4 +39,7 @@ the Anthropic API key as a secret, so it never appears in this public page. It o
 site, and limits scans to 10 a minute per phone and 300 a day overall. Without signal, or if a
 scan fails, typing works as before.
 
+The same Worker also reads restaurant bills for Tip Check (https://tclark333.github.io/tip-check/)
+at `POST /bill` (`worker/src/bill.js`), with its own 100-a-day cap.
+
 Worker: `cd worker && npm install && npm test && npm run deploy` (needs `npx wrangler login`).
