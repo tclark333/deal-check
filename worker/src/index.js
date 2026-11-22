@@ -1,16 +1,19 @@
-// Deal Check's shelf-tag reader. The app posts a photo of a shelf tag; this sends it to Claude
-// and answers with the price, size and unit to fill in. It exists so the Anthropic API key stays
-// here (a Worker secret, ANTHROPIC_API_KEY) and never in the public page.
+// Deal Check's shelf-tag reader, and Tip Check's bill reader at /bill. The app posts a photo; this
+// sends it to Claude and answers with what to fill in (a tag's price, size and unit, or a bill's
+// totals and whether a tip is already on it). It exists so the Anthropic API key stays here (a
+// Worker secret, ANTHROPIC_API_KEY) and never in the public pages.
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import { UNIT_NAMES, finish, toBase64 } from "./tag.js";
+import { finishBill } from "./bill.js";
 
 // Only the app may call this. (localhost:8765 is for testing a local copy of the page.)
 const ORIGINS = new Set(["https://tclark333.github.io", "http://localhost:8765"]);
 const TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const MAX_BYTES = 5_000_000; // the app sends ~300 KB; this just turns away junk
 const DAILY_CAP = 300; // scans per day across everyone; a fraction of a cent each
+const BILL_DAILY_CAP = 100; // bill reads per day across everyone (counted apart from tags)
 
 const Unit = z.enum(UNIT_NAMES);
 const Tag = z.object({
@@ -39,6 +42,60 @@ Fields:
 
 Never guess a number you can't read clearly: use null instead. If several tags are in the photo, use the one nearest the center.`;
 
+const Bill = z.object({
+  found: z.boolean(),
+  subtotal: z.number().nullable(),
+  tax: z.number().nullable(),
+  fees: z.number().nullable(),
+  fee_label: z.string().nullable(),
+  included_tip: z.number().nullable(),
+  included_kind: z.enum(["gratuity", "service_charge"]).nullable(),
+  included_label: z.string().nullable(),
+  total_due: z.number().nullable(),
+  suggested_tips_printed: z.boolean(),
+});
+
+const BILL_SYSTEM = `You read restaurant bills (the check or receipt) from phone photos, for an app that tells an older diner whether the tip is already included and, if not, works out a tip. Getting "already included" wrong costs someone money or embarrasses them, so be careful and exact.
+
+Fields:
+- found: false if no restaurant bill with readable amounts is in the photo, or it is too blurry to read the totals with confidence; then set every number to null and suggested_tips_printed to false.
+- subtotal: the food and drink total before tax, fees and any gratuity, after any discounts or coupons. Usually labeled Subtotal, Sub Total, Food & Bev, or Net.
+- tax: the sales tax in dollars (add several tax lines together), or null if none is shown.
+- fees: added charges that are NOT a tip and NOT a service charge, such as a kitchen appreciation fee, credit card surcharge, health or wellness fee, or delivery fee; add several together. null if none.
+- fee_label: those fees' wording as printed, at most five words, such as "Kitchen fee 3%"; otherwise null.
+- included_tip: dollars of tip that the restaurant has ALREADY ADDED to what is owed: lines such as Gratuity, Auto Gratuity, Auto Grat, Grat, Tip Included, Service Charge, or "18% gratuity added for parties of 6 or more" when the amount is actually on the bill. null if none. NOT included: a printed table of suggested tips ("Suggested gratuity: 18% = $9.12, 20% = $10.13"), a blank "Tip: ____" line, or a sentence saying gratuity may be added without a dollar amount on the bill.
+- included_kind: "gratuity" for gratuity or tip wording, "service_charge" when it is labeled a service charge; null when included_tip is null.
+- included_label: that line's wording as printed, at most five words, such as "Gratuity 18%"; otherwise null.
+- total_due: the amount the bill says to pay before any extra tip. It already contains any included tip and fees. Use the bill's Total, Amount Due or Balance Due. If a tip has been handwritten or printed in on a signed card slip, still give the total before that tip. null if no total is shown.
+- suggested_tips_printed: true if the bill prints suggested tip amounts or percentages for the diner to choose from.
+
+Never guess a number you can't read clearly: use null instead. If several bills or slips are in the photo, use the itemized bill.`;
+
+async function readBill(env, mediaType, bytes) {
+  const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, maxRetries: 1, timeout: 25_000 });
+  const message = await client.messages.parse({
+    model: "claude-haiku-5-5",
+    max_tokens: 2000,
+    output_config: { effort: "low", format: zodOutputFormat(Bill) },
+    system: BILL_SYSTEM,
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: mediaType, data: toBase64(bytes) } },
+          { type: "text", text: "Read this restaurant bill." },
+        ],
+      },
+    ],
+  });
+  if (message.stop_reason !== "end_turn" || !message.parsed_output) {
+    console.log("unusable bill reply", message.stop_reason, JSON.stringify(message.stop_details ?? null));
+    return null;
+  }
+  console.log("bill", JSON.stringify(message.parsed_output), JSON.stringify(message.usage));
+  return message.parsed_output;
+}
+
 function reply(body, status, origin) {
   return new Response(JSON.stringify(body), {
     status,
@@ -51,11 +108,11 @@ function reply(body, status, origin) {
   });
 }
 
-/** Counts today's scans; false once the day's cap is reached. */
-async function underDailyCap(env) {
-  const key = "day:" + new Date().toISOString().slice(0, 10);
+/** Counts today's scans (tags, or bills apart); false once the day's cap is reached. */
+async function underDailyCap(env, isBill) {
+  const key = (isBill ? "bill:" : "day:") + new Date().toISOString().slice(0, 10);
   const used = Number(await env.SCANS.get(key)) || 0;
-  if (used >= DAILY_CAP) return false;
+  if (used >= (isBill ? BILL_DAILY_CAP : DAILY_CAP)) return false;
   await env.SCANS.put(key, String(used + 1), { expirationTtl: 3 * 86400 });
   return true;
 }
@@ -109,16 +166,21 @@ export default {
     const bytes = new Uint8Array(await request.arrayBuffer());
     if (!bytes.length || bytes.length > MAX_BYTES) return reply({ error: "size" }, 413, origin);
 
+    const isBill = new URL(request.url).pathname === "/bill";
     const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
     const { success } = await env.SCAN_LIMIT.limit({ key: ip });
     if (!success) return reply({ error: "busy" }, 429, origin);
-    if (!(await underDailyCap(env))) return reply({ error: "cap" }, 429, origin);
+    if (!(await underDailyCap(env, isBill))) return reply({ error: "cap" }, 429, origin);
 
     if (!env.ANTHROPIC_API_KEY) {
       console.log("ANTHROPIC_API_KEY is not set");
       return reply({ error: "failed" }, 500, origin);
     }
     try {
+      if (isBill) {
+        const bill = await readBill(env, mediaType, bytes);
+        return bill ? reply(finishBill(bill), 200, origin) : reply({ error: "failed" }, 502, origin);
+      }
       const tag = await readTag(env, mediaType, bytes);
       return tag ? reply(finish(tag), 200, origin) : reply({ error: "failed" }, 502, origin);
     } catch (err) {
