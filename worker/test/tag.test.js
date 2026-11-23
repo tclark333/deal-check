@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { finish, mergeReadings, parseCards, toBase64 } from "../src/tag.js";
+import { finish, likelyTwin, mergeReadings, parseCards, toBase64 } from "../src/tag.js";
 
 const blank = { found: true, price: null, regular_price: null, size: null, unit: null,
   unit_price: null, unit_price_qty: null, unit_price_unit: null, note: null, buy_qty: null,
@@ -125,6 +125,22 @@ test("scanned items from the app are cleaned", () => {
   assert.deepEqual([cards[0].product, cards[0].deal.kind, cards[1].size, cards[1].check], ["Tito's vodka", "bogo", null, null]);
   assert.deepEqual(parseCards("not json"), []);
   assert.deepEqual(parseCards(null), []);
+});
+
+test("backup match: a price-less sign and its tag", () => {
+  const tagCard = { ...shelf, n: 1, product: "Publix premium ice cream vanilla 48 oz" };
+  const breyers = { ...shelf, n: 2, price: 6.49, product: "Breyers natural vanilla ice cream 48 oz" };
+  const bogo = finish(tag({ deal_kind: "bogo", size: 48, unit: "oz", product: "Publix Premium Ice Cream 48 oz" }));
+  assert.equal(likelyTwin(bogo, [tagCard, breyers]), tagCard);
+  // the other way round: the sign is already a card
+  const signCard = { ...bogo, n: 3 };
+  assert.equal(likelyTwin({ ...shelf, product: "Publix premium ice cream vanilla 48 oz" }, [signCard]), signCard);
+  // another brand, another size, or two priced tags don't match
+  assert.equal(likelyTwin(finish(tag({ deal_kind: "save", save_amount: 1.5, product: "Breyers Natural Vanilla" })), [tagCard]), null);
+  assert.equal(likelyTwin(finish(tag({ deal_kind: "bogo", size: 16, unit: "oz", product: "Publix Premium Ice Cream" })), [tagCard]), null);
+  assert.equal(likelyTwin({ ...shelf, product: "Publix premium ice cream vanilla" }, [tagCard]), null);
+  // two cards that fit: don't guess
+  assert.equal(likelyTwin(bogo, [tagCard, { ...tagCard, n: 4, product: "Publix premium ice cream chocolate 48 oz" }]), null);
 });
 
 test("base64 matches Node's", () => {

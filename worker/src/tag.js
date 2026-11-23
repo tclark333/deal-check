@@ -163,6 +163,42 @@ export function parseCards(raw) {
     });
 }
 
+// Words that say nothing about which product it is.
+const FILLER = new Set(["oz", "fl", "ml", "l", "lb", "lbs", "ct", "ounce", "ounces", "pack", "pk", "the", "and", "of", "with"]);
+
+function nameWords(s) {
+  return new Set((s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").split(" ")
+    .filter((w) => w && !/^\d/.test(w) && !FILLER.has(w)));
+}
+
+/** Same amount of product (an ounce is an ounce either way), or one side doesn't say. */
+function sameSize(a, b) {
+  if (!a.size || !b.size) return true;
+  if (OUNCES.has(a.unit) && OUNCES.has(b.unit)) return Math.abs(a.size / b.size - 1) < 0.03;
+  if (UNITS[a.unit].kind !== UNITS[b.unit].kind) return false;
+  return Math.abs((a.size * UNITS[a.unit].base) / (b.size * UNITS[b.unit].base) - 1) < 0.03;
+}
+
+/**
+ * The backup for when the model doesn't say a sale sign and a shelf tag are the same item: a sign
+ * with only the deal meeting a priced tag (or the other way round) whose names agree (the shorter
+ * name's words nearly all in the longer, since signs name things more briefly) and whose sizes
+ * agree. Only when exactly one card fits.
+ */
+export function likelyTwin(own, cards) {
+  const mine = nameWords(own.product);
+  if (mine.size < 2) return null;
+  const fits = cards.filter((c) => {
+    if (!!c.price === !!own.price) return false; // one must be a price-less sign, the other priced
+    if (!(c.deal && !c.price) && !(own.deal && !own.price)) return false;
+    const theirs = nameWords(c.product);
+    if (theirs.size < 2 || !sameSize(own, c)) return false;
+    const [small, big] = mine.size <= theirs.size ? [mine, theirs] : [theirs, mine];
+    return [...small].filter((w) => big.has(w)).length / small.size >= 0.75;
+  });
+  return fits.length === 1 ? fits[0] : null;
+}
+
 /** How an already-scanned item is described to the model, one line each. */
 export function describeCard(c) {
   const parts = [c.product ?? "item (name not read)"];

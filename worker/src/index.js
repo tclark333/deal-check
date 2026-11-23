@@ -5,7 +5,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
-import { DEAL_KINDS, UNIT_NAMES, describeCard, finish, mergeReadings, parseCards, toBase64 } from "./tag.js";
+import { DEAL_KINDS, UNIT_NAMES, describeCard, finish, likelyTwin, mergeReadings, parseCards, toBase64 } from "./tag.js";
 import { finishBill } from "./bill.js";
 
 // Only the app may call this. (localhost:8765 is for testing a local copy of the page.)
@@ -47,7 +47,7 @@ Fields:
 - save_amount: dollars off one item when the sign says "Save $X" (for "Save $2 on 2", 1.00); otherwise null.
 - percent_off: the percent off one item ("25% off" is 25; "buy 1 get 1 50% off" is 25 with buy_qty 2); otherwise null.
 - product: what the item is, at most six words, such as "Tropicana orange juice 52 oz" or "Tito's vodka 1.75 L"; null if no name is printed.
-- same_as: the message may list items already scanned for this comparison, each with a number. If this photo is of the same product as one of them (that product's sale sign, its regular shelf tag, or the same tag again), give that item's number. A different size, flavor, scent or brand is a different product. Otherwise null.
+- same_as: the message may list items already scanned for this comparison, each with a number. If this photo is of the same product as one of them (that product's sale sign, its regular shelf tag, or the same tag again), give that item's number. A sale sign usually names the product more briefly than its shelf tag (often leaving out the flavor) and covers every flavor it names, so if the brand and product agree and the size matches or isn't on the sign, it's the same product. A different size or brand is a different product, and so is a shelf tag with a different flavor or scent from another shelf tag. Otherwise null.
 - note: at most five words, only about the deal itself, such as "2 for $5 deal", "buy 1 get 1 free", "member price" or "sale ends 11/20"; otherwise null. Never comment on the photo or on how sure you are.
 
 Never guess a number you can't read clearly: use null instead. If several tags are in the photo, use the one nearest the center.`;
@@ -167,7 +167,7 @@ function answer(tag, cards, newApp) {
   const own = finish(tag);
   if (!own.found) return own;
   if (!newApp && !own.price) return { found: false };
-  const card = Number.isInteger(tag.same_as) ? cards.find((c) => c.n === tag.same_as) : null;
+  const card = (Number.isInteger(tag.same_as) && cards.find((c) => c.n === tag.same_as)) || likelyTwin(own, cards);
   if (!card) return own;
   return { ...mergeReadings(card, own), same: card.n, own };
 }
