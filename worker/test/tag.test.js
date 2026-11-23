@@ -1,9 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { finish, toBase64 } from "../src/tag.js";
+import { finish, mergeReadings, parseCards, toBase64 } from "../src/tag.js";
 
 const blank = { found: true, price: null, regular_price: null, size: null, unit: null,
-  unit_price: null, unit_price_qty: null, unit_price_unit: null, note: null, buy_qty: null };
+  unit_price: null, unit_price_qty: null, unit_price_unit: null, note: null, buy_qty: null,
+  deal_kind: null, save_amount: null, percent_off: null, product: null, same_as: null };
+const extra = { product: null, regular: null, deal: null };
 const tag = (o) => ({ ...blank, ...o });
 
 test("nothing found", () => {
@@ -14,7 +16,7 @@ test("nothing found", () => {
 
 test("liquor tag with no unit price", () => {
   assert.deepEqual(finish(tag({ price: 24.99, size: 1.75, unit: "L" })),
-    { found: true, price: 24.99, size: 1.75, unit: "L", note: null, check: null, buy: null });
+    { found: true, price: 24.99, size: 1.75, unit: "L", note: null, check: null, buy: null, ...extra });
 });
 
 test("unit price matches", () => {
@@ -58,7 +60,7 @@ test("different kinds aren't compared", () => {
 
 test("junk is cleaned", () => {
   const r = finish(tag({ price: 4.999, size: -1, unit: "pints", note: "  member price  " }));
-  assert.deepEqual(r, { found: true, price: 5, size: null, unit: null, note: "member price", check: null, buy: null });
+  assert.deepEqual(r, { found: true, price: 5, size: null, unit: null, note: "member price", check: null, buy: null, ...extra });
 });
 
 test("buy one get one free", () => {
@@ -73,6 +75,56 @@ test("oz and fl oz check against each other", () => {
   // a drink tag that prints "22.42 cents per oz" read as 12 fl oz at $2.69
   const r = finish(tag({ price: 2.69, size: 12, unit: "fl oz", unit_price: 0.2242, unit_price_unit: "oz" }));
   assert.equal(r.check, "ok");
+});
+
+test("a sale sign with only a deal is kept", () => {
+  const r = finish(tag({ deal_kind: "bogo", buy_qty: 2, note: "buy 1 get 1 free", product: "Publix ice cream" }));
+  assert.deepEqual([r.found, r.price, r.deal.kind, r.product], [true, null, "bogo", "Publix ice cream"]);
+  assert.equal(finish(tag({ deal_kind: "save", save_amount: 1.5 })).deal.save, 1.5);
+  // "sale" with no price to go on is nothing
+  assert.deepEqual(finish(tag({ deal_kind: "sale" })), { found: false });
+});
+
+const shelf = finish(tag({ price: 5.99, size: 48, unit: "oz", unit_price: 0.125, unit_price_unit: "oz", product: "Publix ice cream 48 oz" }));
+
+test("shelf tag then its BOGO sign", () => {
+  const sign = finish(tag({ deal_kind: "bogo", buy_qty: 2, note: "buy 1 get 1 free" }));
+  const m = mergeReadings(shelf, sign);
+  assert.deepEqual([m.price, m.size, m.unit, m.buy, m.note, m.regular], [3, 48, "oz", 2, "buy 1 get 1 free", 5.99]);
+  // either order
+  assert.deepEqual(mergeReadings(sign, shelf), m);
+});
+
+test("save and percent-off signs", () => {
+  assert.equal(mergeReadings(shelf, finish(tag({ deal_kind: "save", save_amount: 1 }))).price, 4.99);
+  assert.equal(mergeReadings(shelf, finish(tag({ deal_kind: "percent_off", percent_off: 25 }))).price, 4.49);
+});
+
+test("a sale sign with its own price wins when it's lower", () => {
+  const sign = finish(tag({ price: 4.49, deal_kind: "sale", note: "sale" }));
+  const m = mergeReadings(shelf, sign);
+  assert.deepEqual([m.price, m.size, m.note, m.check], [4.49, 48, "sale", null]);
+});
+
+test("the same tag twice is just the tag", () => {
+  const m = mergeReadings(shelf, shelf);
+  assert.deepEqual([m.price, m.size, m.check, m.buy], [5.99, 48, "ok", null]);
+});
+
+test("two deal-only signs give no price", () => {
+  const sign = finish(tag({ deal_kind: "bogo" }));
+  assert.equal(mergeReadings(sign, sign).price, null);
+});
+
+test("scanned items from the app are cleaned", () => {
+  const cards = parseCards(JSON.stringify([
+    { n: 3, product: "Tito's\nvodka", price: 24.99, size: 1.75, unit: "L", deal: { kind: "bogo" } },
+    { n: "x" }, { n: 4, size: 5, unit: "pints", check: "bad" }, 7,
+  ]));
+  assert.equal(cards.length, 2);
+  assert.deepEqual([cards[0].product, cards[0].deal.kind, cards[1].size, cards[1].check], ["Tito's vodka", "bogo", null, null]);
+  assert.deepEqual(parseCards("not json"), []);
+  assert.deepEqual(parseCards(null), []);
 });
 
 test("base64 matches Node's", () => {

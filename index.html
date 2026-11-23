@@ -367,6 +367,7 @@ function addItem({ size, unit }, focus = false) {
   const n = ++itemCount;
   const item = document.createElement("div");
   item.className = "item";
+  item.cid = n; // the number a scanned card goes by when spotting a second picture of the same item
   item.innerHTML = `
     <div class="badge">BEST DEAL</div>
     <div class="field"><label for="price-${n}"><span>Price</span></label>
@@ -387,21 +388,19 @@ function addItem({ size, unit }, focus = false) {
   if (focus) item.querySelector(".price").focus();
 }
 
-/** Only sizes past the first two can be removed, and there's a limit to how many. */
+/** Every card can be removed (the last two are emptied instead), and there's a limit to how many. */
 function syncItems() {
-  [...itemsEl.children].forEach((item, i) => {
-    const removable = i >= 2;
-    item.classList.toggle("removable", removable);
-    let x = item.querySelector(".remove");
-    if (removable && !x) {
-      x = document.createElement("button");
+  for (const item of itemsEl.children) {
+    item.classList.add("removable");
+    if (!item.querySelector(".remove")) {
+      const x = document.createElement("button");
       x.className = "remove";
       x.type = "button";
       x.textContent = "×";
-      x.setAttribute("aria-label", "Remove this size");
+      x.setAttribute("aria-label", "Remove this one");
       item.append(x);
-    } else if (!removable && x) x.remove();
-  });
+    }
+  }
   addButton.hidden = itemsEl.children.length >= MAX_ITEMS;
   compare();
 }
@@ -484,17 +483,33 @@ function reset() {
 
 // typing over a scanned value clears its note
 const edited = (e) => {
-  setNote(e.target.closest(".item"), "");
+  const item = e.target.closest(".item");
+  if (item) item.scan = null;
+  setNote(item, "");
   compare();
 };
 itemsEl.addEventListener("input", edited);
 itemsEl.addEventListener("change", edited);
 itemsEl.addEventListener("click", (e) => {
   const x = e.target.closest(".remove");
-  if (!x) return;
-  x.closest(".item").remove();
-  syncItems();
+  if (x) dropCard(x.closest(".item"));
 });
+
+/** Takes a card away, or empties it when only two are left. A reading on its way to it is dropped. */
+function dropCard(item) {
+  if (itemsEl.children.length > 2) {
+    item.remove();
+    syncItems();
+    return;
+  }
+  item.querySelector(".price").value = "";
+  item.querySelector(".size").value = "";
+  item.readId = (item.readId || 0) + 1;
+  item.classList.remove("reading");
+  item.scan = null;
+  setNote(item, "");
+  compare();
+}
 // select the whole price when tapping in, so typing replaces it
 itemsEl.addEventListener("focusin", (e) => {
   if (e.target.matches("input")) e.target.select();
@@ -531,9 +546,9 @@ scanButton.addEventListener("click", () => {
   else phoneCamera(false);
 });
 
-/** No price yet, and no picture on its way. */
+/** No price yet, no picture on its way, and not a sale sign waiting for its shelf tag. */
 function isBlank(el) {
-  return !el.querySelector(".price").value.trim() && !el.classList.contains("reading");
+  return !el.querySelector(".price").value.trim() && !el.classList.contains("reading") && !el.scan;
 }
 
 /**
@@ -565,6 +580,7 @@ function clearCards() {
     el.querySelector(".size").value = "";
     el.readId = (el.readId || 0) + 1;
     el.classList.remove("reading");
+    el.scan = null;
     setNote(el, "");
   }
   syncItems();
@@ -729,6 +745,24 @@ camera.addEventListener("change", () => {
   if (file) readPhoto((phoneLater && laterTarget()) || firstTarget(), file);
 });
 
+// Readings go out one at a time, so each one is told what's already been scanned and the reader
+// can spot a second picture of the same item (its sale sign, its shelf tag, or the same tag again).
+let readLine = Promise.resolve();
+function inLine(job) {
+  const p = readLine.then(job);
+  readLine = p.catch(() => {});
+  return p;
+}
+
+const SCAN_KEYS = ["product", "price", "regular", "size", "unit", "buy", "deal", "note", "check"];
+
+/** The cards already scanned in this comparison, as the reader is told about them. */
+function scannedCards(except) {
+  return [...itemsEl.children]
+    .filter((el) => el !== except && el.scan)
+    .map((el) => ({ n: el.cid, ...el.scan }));
+}
+
 /** Sends a picture of a tag (a Blob, or a File from the phone camera) and fills in the card. */
 async function readPhoto(item, picture) {
   if (!item) return;
@@ -736,6 +770,7 @@ async function readPhoto(item, picture) {
   const id = (item.readId = (item.readId || 0) + 1);
   const mine = () => item.isConnected && item.readId === id;
   item.classList.add("reading");
+  item.scan = null;
   try {
     if (!picture || !item.isConnected) return;
     if (!navigator.onLine) {
@@ -744,41 +779,65 @@ async function readPhoto(item, picture) {
     }
     setNote(item, "Reading the tag…");
     const photo = picture instanceof File ? await shrink(picture) : picture;
-    const res = await fetch(SCAN_URL, {
-      method: "POST",
-      headers: { "Content-Type": "image/jpeg" },
-      body: photo,
-      signal: AbortSignal.timeout(30000),
+    await inLine(async () => {
+      if (!mine()) return;
+      const cards = scannedCards(item);
+      // always sent (even empty): it tells the reader this app understands sale signs and pairing
+      const url = `${SCAN_URL}?cards=${encodeURIComponent(JSON.stringify(cards))}`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "image/jpeg" },
+        body: photo,
+        signal: AbortSignal.timeout(30000),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!mine()) return;
+      if (!res.ok) {
+        setNote(item, SCAN_ERRORS[data.error] || "Couldn't read that one. Try again, or type the numbers.", true);
+        return;
+      }
+      if (!data.found) {
+        setNote(item, "Couldn't find a price in that picture. Get closer to the tag and try again.", true);
+        return;
+      }
+      // the same item as a card already scanned: put the two together there and let this card go
+      const twin = data.same && [...itemsEl.children].find((el) => el.cid === data.same && el !== item);
+      if (twin) {
+        const paired = twin.scan?.deal || data.own?.deal;
+        fill(twin, data, paired ? "Put together with its sale sign." : "Same tag as before, so it's kept as one.");
+        dropCard(item);
+      } else fill(item, data.own ?? data);
     });
-    const data = await res.json().catch(() => ({}));
-    if (!mine()) return;
-    if (!res.ok) {
-      setNote(item, SCAN_ERRORS[data.error] || "Couldn't read that one. Try again, or type the numbers.", true);
-      return;
-    }
-    if (!data.found) {
-      setNote(item, "Couldn't find a price in that picture. Get closer to the tag and try again.", true);
-      return;
-    }
-    item.querySelector(".price").value = data.price.toFixed(2);
-    if (data.size && UNITS[data.unit]) {
-      item.querySelector(".size").value = trimNum(data.size);
-      item.querySelector(".unit").value = data.unit;
-    }
-    compare();
-    const parts = [];
-    if (data.note) parts.push(cap(data.note) + ".");
-    if (data.buy) parts.push(`That's the price each if you buy ${data.buy}.`);
-    if (!data.size) parts.push("Couldn't read the size; type it in.");
-    else if (data.check === "estimated") parts.push("Size worked out from the tag's unit price.");
-    const warn = data.check === "mismatch" || !data.size;
-    if (data.check === "mismatch") parts.push("Check these: they don't match the tag's unit price.");
-    setNote(item, parts.join(" ") || "Read from the tag. Check it looks right.", warn);
   } catch {
     if (mine()) setNote(item, "Couldn't reach the tag reader. Try again, or type the numbers.", true);
   } finally {
     if (item.readId === id) item.classList.remove("reading");
   }
+}
+
+/** Fills a card from a reading and says what happened under it. */
+function fill(item, data, lead = "") {
+  item.scan = Object.fromEntries(SCAN_KEYS.map((k) => [k, data[k] ?? null]));
+  item.querySelector(".price").value = data.price ? data.price.toFixed(2) : "";
+  if (data.size && UNITS[data.unit]) {
+    item.querySelector(".size").value = trimNum(data.size);
+    item.querySelector(".unit").value = data.unit;
+  }
+  compare();
+  const parts = lead ? [lead] : [];
+  if (data.note) parts.push(cap(data.note) + ".");
+  if (!data.price) {
+    // a sale sign with only the deal on it ("Buy 1 Get 1 Free", "Save $1")
+    parts.push("Now scan this item's regular shelf tag, or type its price.");
+    setNote(item, parts.join(" "));
+    return;
+  }
+  if (data.buy) parts.push(`That's the price each if you buy ${data.buy}.`);
+  if (!data.size) parts.push("Couldn't read the size; type it in.");
+  else if (data.check === "estimated") parts.push("Size worked out from the tag's unit price.");
+  const warn = data.check === "mismatch" || !data.size;
+  if (data.check === "mismatch") parts.push("Check these: they don't match the tag's unit price.");
+  setNote(item, parts.join(" ") || "Read from the tag. Check it looks right.", warn);
 }
 
 reset();

@@ -5,7 +5,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
-import { UNIT_NAMES, finish, toBase64 } from "./tag.js";
+import { DEAL_KINDS, UNIT_NAMES, describeCard, finish, mergeReadings, parseCards, toBase64 } from "./tag.js";
 import { finishBill } from "./bill.js";
 
 // Only the app may call this. (localhost:8765 is for testing a local copy of the page.)
@@ -27,17 +27,27 @@ const Tag = z.object({
   unit_price_qty: z.number().nullable(),
   unit_price_unit: Unit.nullable(),
   note: z.string().nullable(),
+  deal_kind: z.enum(DEAL_KINDS).nullable(),
+  save_amount: z.number().nullable(),
+  percent_off: z.number().nullable(),
+  product: z.string().nullable(),
+  same_as: z.number().nullable(),
 });
 
-const SYSTEM = `You read store shelf tags (the price labels on shelves) from phone photos, for an app that works out which size of a product is the better deal. Report what someone pays to buy one of the item and how much product that gets them.
+const SYSTEM = `You read store shelf tags (the price labels on shelves) and sale signs from phone photos, for an app that works out which size of a product is the better deal. Report what someone pays to buy one of the item and how much product that gets them.
 
 Fields:
-- found: false if no shelf tag with a readable price is in the photo; then set every other field to null.
-- price: dollars to buy one. If a sale, clearance, rollback or member/card price is shown, use that. For a multi-buy deal such as "2 for $5", give the price of one at the deal (2.50). For buy one get one free (BOGO), give half the price of one. If a sale sign for the same item sits beside its shelf tag, the sale sign's deal is the price. A "save $X" amount is never the price. Ignore deposits, CRV and bottle fees.
+- found: false if the photo shows no shelf tag, sale sign or price sticker with a readable price or deal; then set every other field to null.
+- price: dollars to buy one. null when the photo is a sale sign that gives only the deal ("Buy 1 Get 1 Free", "Save $1.50", "25% off") and no price to pay. If a sale, clearance, rollback or member/card price is shown, use that. For a multi-buy deal such as "2 for $5", give the price of one at the deal (2.50). For buy one get one free (BOGO), give half the price of one. If a sale sign for the same item sits beside its shelf tag, the sale sign's deal is the price. A "save $X" amount is never the price. Ignore deposits, CRV and bottle fees.
 - buy_qty: how many you must buy to get that price, for a multi-buy or buy-one-get-one deal ("2 for $5" and BOGO are 2, "3 for $10" is 3); otherwise null.
 - regular_price: when price is a sale or deal price and the regular price is also shown, the regular price for one; otherwise null.
 - size and unit: the total contents of one purchase. Liquor and wine tags usually print it as 50ML, 375ML, 750ML, 1L or 1.75L. For a multipack, multiply it out (a 6-pack of 12 fl oz cans is 72 fl oz). Use "fl oz" for liquids measured in ounces and "oz" for weight. Use "ct" for things sold by count (eggs, rolls, pods, bags, tablets) when the tag gives a count rather than a volume or weight.
 - unit_price, unit_price_qty, unit_price_unit: the unit price printed on the tag, in dollars. "$0.25 per oz" is 0.25, 1, "oz". "12.3¢ / fl oz" is 0.123, 1, "fl oz". "$3.45 per 100 ct" is 3.45, 100, "ct". "$1.99/lb" is 1.99, 1, "lb". If the tag prints no unit price, all three are null.
+- deal_kind: "bogo" for buy one get one free, "multi_buy" for deals like "2 for $5", "save" for a dollars-off amount, "percent_off" for a percent off, "sale" for a sale, clearance, rollback or member price; otherwise null.
+- save_amount: dollars off one item when the sign says "Save $X" (for "Save $2 on 2", 1.00); otherwise null.
+- percent_off: the percent off one item ("25% off" is 25; "buy 1 get 1 50% off" is 25 with buy_qty 2); otherwise null.
+- product: what the item is, at most six words, such as "Tropicana orange juice 52 oz" or "Tito's vodka 1.75 L"; null if no name is printed.
+- same_as: the message may list items already scanned for this comparison, each with a number. If this photo is of the same product as one of them (that product's sale sign, its regular shelf tag, or the same tag again), give that item's number. A different size, flavor, scent or brand is a different product. Otherwise null.
 - note: at most five words, only about the deal itself, such as "2 for $5 deal", "buy 1 get 1 free", "member price" or "sale ends 11/20"; otherwise null. Never comment on the photo or on how sure you are.
 
 Never guess a number you can't read clearly: use null instead. If several tags are in the photo, use the one nearest the center.`;
@@ -117,7 +127,7 @@ async function underDailyCap(env, isBill) {
   return true;
 }
 
-async function readTag(env, mediaType, bytes) {
+async function readTag(env, mediaType, bytes, cards) {
   const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, maxRetries: 1, timeout: 25_000 });
   const message = await client.messages.parse({
     model: "claude-haiku-5-5",
@@ -129,7 +139,7 @@ async function readTag(env, mediaType, bytes) {
         role: "user",
         content: [
           { type: "image", source: { type: "base64", media_type: mediaType, data: toBase64(bytes) } },
-          { type: "text", text: "Read this shelf tag." },
+          { type: "text", text: tagAsk(cards) },
         ],
       },
     ],
@@ -140,6 +150,26 @@ async function readTag(env, mediaType, bytes) {
   }
   console.log("read", JSON.stringify(message.parsed_output), JSON.stringify(message.usage));
   return message.parsed_output;
+}
+
+function tagAsk(cards) {
+  if (!cards.length) return "Read this shelf tag.";
+  return `Read this shelf tag or sale sign.\n\nItems already scanned:\n${cards.map(describeCard).join("\n")}`;
+}
+
+/**
+ * The reading to send back. When the photo is the same product as an item already scanned, the
+ * two are put together (`same` is that item's number) and `own` is this photo's reading alone,
+ * for when the app no longer has that item. An app from before 11/23 (it sends no ?cards=) can't
+ * show a sale sign without a price, so it gets "not found" for one, as it used to.
+ */
+function answer(tag, cards, newApp) {
+  const own = finish(tag);
+  if (!own.found) return own;
+  if (!newApp && !own.price) return { found: false };
+  const card = Number.isInteger(tag.same_as) ? cards.find((c) => c.n === tag.same_as) : null;
+  if (!card) return own;
+  return { ...mergeReadings(card, own), same: card.n, own };
 }
 
 export default {
@@ -181,8 +211,10 @@ export default {
         const bill = await readBill(env, mediaType, bytes);
         return bill ? reply(finishBill(bill), 200, origin) : reply({ error: "failed" }, 502, origin);
       }
-      const tag = await readTag(env, mediaType, bytes);
-      return tag ? reply(finish(tag), 200, origin) : reply({ error: "failed" }, 502, origin);
+      const params = new URL(request.url).searchParams;
+      const cards = parseCards(params.get("cards"));
+      const tag = await readTag(env, mediaType, bytes, cards);
+      return tag ? reply(answer(tag, cards, params.has("cards")), 200, origin) : reply({ error: "failed" }, 502, origin);
     } catch (err) {
       console.log("scan failed", err?.status ?? "", err?.message ?? String(err));
       return reply({ error: "failed" }, 502, origin);
