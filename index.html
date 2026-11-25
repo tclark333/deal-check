@@ -180,6 +180,21 @@
     padding: 4px 6px;
   }
   .item.removable { padding-top: 22px; }
+  /* what a scanned card is, from its tag: one short line across the top, cut off if long */
+  .item .name {
+    display: none;
+    position: absolute;
+    top: 11px;
+    left: 14px;
+    right: 40px;
+    font-size: 14px;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .item.named .name { display: block; }
+  .item.named { padding-top: 34px; }
 
   #add {
     margin-top: 10px;
@@ -370,6 +385,7 @@ function addItem({ size, unit }, focus = false) {
   item.cid = n; // the number a scanned card goes by when spotting a second picture of the same item
   item.innerHTML = `
     <div class="badge">BEST DEAL</div>
+    <div class="name"></div>
     <div class="field"><label for="price-${n}"><span>Price</span></label>
       <div class="money"><input class="price" id="price-${n}" inputmode="decimal" autocomplete="off" placeholder="0.00"></div>
     </div>
@@ -507,6 +523,7 @@ function dropCard(item) {
   item.readId = (item.readId || 0) + 1;
   item.classList.remove("reading");
   item.scan = null;
+  setName(item, "");
   setNote(item, "");
   compare();
 }
@@ -581,6 +598,7 @@ function clearCards() {
     el.readId = (el.readId || 0) + 1;
     el.classList.remove("reading");
     el.scan = null;
+    setName(el, "");
     setNote(el, "");
   }
   syncItems();
@@ -771,6 +789,7 @@ async function readPhoto(item, picture) {
   const mine = () => item.isConnected && item.readId === id;
   item.classList.add("reading");
   item.scan = null;
+  setName(item, "");
   try {
     if (!picture || !item.isConnected) return;
     if (!navigator.onLine) {
@@ -815,9 +834,18 @@ async function readPhoto(item, picture) {
   }
 }
 
+/** The item's name across the top of its card (the whole name shows when held or hovered). */
+function setName(item, text) {
+  const name = item.querySelector(".name");
+  name.textContent = text;
+  name.title = text;
+  item.classList.toggle("named", !!text);
+}
+
 /** Fills a card from a reading and says what happened under it. */
 function fill(item, data, lead = "") {
   item.scan = Object.fromEntries(SCAN_KEYS.map((k) => [k, data[k] ?? null]));
+  setName(item, data.product ?? "");
   item.querySelector(".price").value = data.price ? data.price.toFixed(2) : "";
   if (data.size && UNITS[data.unit]) {
     item.querySelector(".size").value = trimNum(data.size);
