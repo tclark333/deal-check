@@ -27,6 +27,7 @@ const Tag = z.object({
   unit_price_qty: z.number().nullable(),
   unit_price_unit: Unit.nullable(),
   note: z.string().nullable(),
+  deal_text: z.string().nullable(),
   deal_kind: z.enum(DEAL_KINDS).nullable(),
   save_amount: z.number().nullable(),
   percent_off: z.number().nullable(),
@@ -38,16 +39,17 @@ const SYSTEM = `You read store shelf tags (the price labels on shelves) and sale
 
 Fields:
 - found: false if the photo shows no shelf tag, sale sign or price sticker with a readable price or deal; then set every other field to null.
-- price: dollars to buy one. null when the photo is a sale sign that gives only the deal ("Buy 1 Get 1 Free", "Save $1.50", "25% off") and no price to pay. If a sale, clearance, rollback or member/card price is shown, use that. For a multi-buy deal such as "2 for $5", give the price of one at the deal (2.50). For buy one get one free (BOGO), give half the price of one. If a sale sign for the same item sits beside its shelf tag, the sale sign's deal is the price. A "save $X" amount is never the price. Ignore deposits, CRV and bottle fees.
-- buy_qty: how many you must buy to get that price, for a multi-buy or buy-one-get-one deal ("2 for $5" and BOGO are 2, "3 for $10" is 3); otherwise null.
+- price: dollars to buy one. null when the photo is a sale sign that gives only the deal ("Buy 1 Get 1 Free", "Buy 2 Get One Free", "Save $1.50", "Save 8.99 on 3", "25% off") and no price to pay. If a sale, clearance, rollback or member/card price is shown, use that. For a multi-buy deal such as "2 for $5", give the price of one at the deal (2.50). For buy one get one free (BOGO) with the price shown, give half the price of one. If a sale sign for the same item sits beside its shelf tag, the sale sign's deal is the price. A "save $X" or "save $X on N" amount is never the price, and "save $X on N" is not "N for $X". Ignore deposits, CRV and bottle fees.
+- buy_qty: how many you must buy to get that price, for a multi-buy or buy-get deal ("2 for $5" and BOGO are 2, "3 for $10" and "buy 2 get 1 free" are 3); otherwise null.
 - regular_price: when price is a sale or deal price and the regular price is also shown, the regular price for one; otherwise null.
 - size and unit: the total contents of one purchase. Liquor and wine tags usually print it as 50ML, 375ML, 750ML, 1L or 1.75L. For a multipack, multiply it out (a 6-pack of 12 fl oz cans is 72 fl oz). Use "fl oz" for liquids measured in ounces and "oz" for weight. Use "ct" for things sold by count (eggs, rolls, pods, bags, tablets) when the tag gives a count rather than a volume or weight.
 - unit_price, unit_price_qty, unit_price_unit: the unit price printed on the tag, in dollars. "$0.25 per oz" is 0.25, 1, "oz". "12.3¢ / fl oz" is 0.123, 1, "fl oz". "$3.45 per 100 ct" is 3.45, 100, "ct". "$1.99/lb" is 1.99, 1, "lb". If the tag prints no unit price, all three are null.
-- deal_kind: "bogo" for buy one get one free, "multi_buy" for deals like "2 for $5", "save" for a dollars-off amount, "percent_off" for a percent off, "sale" for a sale, clearance, rollback or member price; otherwise null.
-- save_amount: dollars off one item when the sign says "Save $X" (for "Save $2 on 2", 1.00); otherwise null.
+- deal_text: the deal's words exactly as printed, joined with commas, such as "Buy 2 Get One Free, Save 8.99 on 3", "2 for $5", "BOGO" or "Save $1.50"; a price printed with small raised cents (8 with 99 above it) is written 8.99. Leave out slogans and fine print. null if there is no deal.
+- deal_kind: "bogo" for buy one get one free (and any "buy N get M free"), "multi_buy" for deals like "2 for $5", "save" for a dollars-off amount, "percent_off" for a percent off, "sale" for a sale, clearance, rollback or member price; otherwise null.
+- save_amount: dollars off one item when the sign says "Save $X" (for "Save $2 on 2", 1.00; for "Save 8.99 on 3", 3.00); otherwise null.
 - percent_off: the percent off one item ("25% off" is 25; "buy 1 get 1 50% off" is 25 with buy_qty 2); otherwise null.
 - product: what the item is, at most six words, such as "Tropicana orange juice 52 oz" or "Tito's vodka 1.75 L"; null if no name is printed.
-- same_as: the message may list items already scanned for this comparison, each with a number. If this photo is of the same product as one of them (that product's sale sign, its regular shelf tag, or the same tag again), give that item's number. A sale sign usually names the product more briefly than its shelf tag (often leaving out the flavor) and covers every flavor it names, so if the brand and product agree and the size matches or isn't on the sign, it's the same product. A different size or brand is a different product, and so is a shelf tag with a different flavor or scent from another shelf tag. Otherwise null.
+- same_as: the message may list items already scanned for this comparison, each with a number. If this photo is of the same product as one of them (that product's sale sign, its regular shelf tag, or the same tag again), give that item's number. A sale sign usually names the product more briefly than its shelf tag (often leaving out the flavor) and often covers a whole line ("6-pack Coca-Cola soft drink products, 16.9-oz bot." covers a Coca-Cola Zero 6-pack of 16.9 oz bottles), so it covers every flavor and kind it names, so if the brand and product agree and the size matches or isn't on the sign, it's the same product. A different size or brand is a different product, and so is a shelf tag with a different flavor or scent from another shelf tag. Otherwise null.
 - note: at most five words, only about the deal itself, such as "2 for $5 deal", "buy 1 get 1 free", "member price" or "sale ends 11/20"; otherwise null. Never comment on the photo or on how sure you are.
 
 Never guess a number you can't read clearly: use null instead. If several tags are in the photo, use the one nearest the center.`;

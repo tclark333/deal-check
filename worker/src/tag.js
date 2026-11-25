@@ -33,34 +33,150 @@ function roundSize(n) {
   return n >= 10 ? Math.round(n * 10) / 10 : Math.round(n * 100) / 100;
 }
 
-// Deals a sale sign can give without a price ("Buy 1 Get 1 Free", "Save $1.50", "25% off").
+// What the model may call a deal (its fallback when the sign's words can't be worked out here).
 export const DEAL_KINDS = ["bogo", "multi_buy", "save", "percent_off", "sale"];
 
 const text = (s, max) => (typeof s === "string" && s.trim() ? s.replace(/\s+/g, " ").trim().slice(0, max) : null);
+const count = (n, min) => (Number.isInteger(n) && n >= min && n <= 12 ? n : null);
+const cents = (n) => Math.round(n * 100) / 100;
 
-/** The deal on a reading, or null. */
-function cleanDeal(kind, save, pct) {
-  if (!DEAL_KINDS.includes(kind)) return null;
-  const p = positive(pct);
-  return { kind, save: positive(save), pct: p && p < 100 ? p : null };
+/**
+ * A deal, checked. Shapes: { kind: "free", paid, free } (buy 2 get 1 free is paid 2, free 1);
+ * { kind: "pct", paid, got, pct } (25% off is paid 0, got 1; buy 1 get 1 50% off is paid 1, got 1);
+ * { kind: "save", save, n } (dollars off each, n = how many to buy for it);
+ * { kind: "multi", n, total } (2 for $5); { kind: "sale" } (a sale price, nothing to work out).
+ */
+function cleanDeal(d) {
+  if (!d || typeof d !== "object") return null;
+  switch (d.kind) {
+    case "free": {
+      const paid = count(d.paid, 1);
+      const free = count(d.free, 1);
+      return paid && free ? { kind: "free", paid, free } : null;
+    }
+    case "pct": {
+      const paid = count(d.paid, 0);
+      const got = count(d.got, 1);
+      const pct = positive(d.pct);
+      return paid !== null && got && pct && pct < 100 ? { kind: "pct", paid, got, pct } : null;
+    }
+    case "save": {
+      const save = positive(d.save);
+      return save ? { kind: "save", save: cents(save), n: count(d.n, 1) ?? 1 } : null;
+    }
+    case "multi": {
+      const n = count(d.n, 2);
+      const total = positive(d.total);
+      return n && total ? { kind: "multi", n, total } : null;
+    }
+    case "sale":
+      return { kind: "sale" };
+  }
+  return null;
 }
+
+const WORD_NUMBERS = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6 };
+const howMany = (s) => (s == null ? 1 : WORD_NUMBERS[s] ?? parseInt(s, 10));
+const N = "(\\d+|an?|one|two|three|four|five|six)";
+// "$8.99", "8.99", "8 99" (big dollars, small cents) or "$5"
+const MONEY = "\\$?\\s*(\\d+)(?:[.\\s](\\d{2}))?";
+const money = (d, c) => +d + (c ? +c / 100 : 0);
+
+/**
+ * Works out a deal from the sign's own words, as the model copied them: "Buy 2 Get One Free",
+ * "BOGO", "Buy 1 Get 1 50% Off", "2 for $5", "Save $8.99 on 3", "25% off". Null if none of those.
+ * Done here rather than by the model, which once read "Save 8.99 on 3" as "3 for $8.99".
+ */
+export function parseDeal(words) {
+  if (typeof words !== "string") return null;
+  const t = words.toLowerCase().replace(/[\u2010-\u2015]/g, "-");
+  let m;
+  if ((m = t.match(new RegExp(`buy\\s*${N}\\s*[,-]?\\s*get\\s*${N}?\\s*(?:(\\d+)\\s*%\\s*off|free)`)))) {
+    const paid = howMany(m[1]);
+    const got = howMany(m[2]);
+    return cleanDeal(m[3] ? { kind: "pct", paid, got, pct: +m[3] } : { kind: "free", paid, free: got });
+  }
+  if (/\bbogo\b/.test(t)) {
+    m = t.match(/(\d+)\s*%\s*off/);
+    return cleanDeal(m ? { kind: "pct", paid: 1, got: 1, pct: +m[1] } : { kind: "free", paid: 1, free: 1 });
+  }
+  // "2 for $5", "2/$5" (a slash needs the $, so a date like 11/20 isn't a deal)
+  if ((m = t.match(new RegExp(`(\\d+)\\s*(?:for\\s*|/\\s*(?=\\$))${MONEY}`)))) {
+    return cleanDeal({ kind: "multi", n: +m[1], total: money(m[2], m[3]) });
+  }
+  if ((m = t.match(new RegExp(`save\\s*${MONEY}(?:\\s*(?:on|when you buy|with)\\s*${N})?`)))) {
+    const n = howMany(m[3]);
+    return cleanDeal({ kind: "save", save: money(m[1], m[2]) / n, n });
+  }
+  if ((m = t.match(/(\d+)\s*%\s*off/))) return cleanDeal({ kind: "pct", paid: 0, got: 1, pct: +m[1] });
+  return null;
+}
+
+/** The model's own deal fields, for when the sign's words can't be worked out. */
+function modelDeal(tag) {
+  switch (tag.deal_kind) {
+    case "bogo":
+      return cleanDeal({ kind: "free", paid: 1, free: 1 });
+    case "save":
+      return cleanDeal({ kind: "save", save: tag.save_amount, n: 1 });
+    case "percent_off":
+      return cleanDeal({ kind: "pct", paid: 0, got: 1, pct: tag.percent_off });
+    case "multi_buy":
+      return positive(tag.price) && count(tag.buy_qty, 2)
+        ? cleanDeal({ kind: "multi", n: tag.buy_qty, total: tag.price * tag.buy_qty })
+        : null;
+    case "sale":
+      return { kind: "sale" };
+  }
+  return null;
+}
+
+/** What one costs at a deal, and how many to buy, given the regular price where it needs one. */
+export function dealPrice(d, regular) {
+  if (!d) return null;
+  if (d.kind === "multi") return { price: d.total / d.n, buy: d.n };
+  if (!regular) return null;
+  if (d.kind === "free") return { price: (regular * d.paid) / (d.paid + d.free), buy: d.paid + d.free };
+  if (d.kind === "pct") {
+    const n = d.paid + d.got;
+    return { price: (regular * (d.paid + d.got * (1 - d.pct / 100))) / n, buy: n > 1 ? n : null };
+  }
+  if (d.kind === "save" && d.save < regular) return { price: regular - d.save, buy: d.n > 1 ? d.n : null };
+  return null;
+}
+
+/** A deal that gives a price only once the regular price is known (from the item's shelf tag). */
+const needsRegular = (d) => d && (d.kind === "free" || d.kind === "save" || d.kind === "pct");
 
 /**
  * Cleans the model's reading and cross-checks it against the tag's own unit price.
  * `check` is "ok" (it matches), "mismatch" (price or size is probably misread),
  * "estimated" (the size was worked out from the unit price) or null (nothing to check against).
  * `buy` is how many must be bought for that price (a "2 for $5" or buy-one-get-one deal), or null.
- * `price` can be null when the picture is a sale sign that gives only the deal; `deal` then says what
- * it is, so it can be put together with the item's regular shelf tag (see mergeReadings).
+ * A deal is worked out here from the sign's words. `price` is null when the picture is a sale sign
+ * whose deal needs the regular price; it is then put together with the item's shelf tag
+ * (see mergeReadings).
  */
 export function finish(tag) {
   if (!tag || !tag.found) return { found: false };
-  const deal = cleanDeal(tag.deal_kind, tag.save_amount, tag.percent_off);
-  const rawPrice = positive(tag.price);
-  // a sign with only a deal is useful once it meets its shelf tag; a bare "sale" with no price isn't
-  if (!rawPrice && !(deal && (deal.kind === "bogo" || deal.save || deal.pct))) return { found: false };
-  const price = rawPrice ? Math.round(rawPrice * 100) / 100 : null;
+  const deal = parseDeal(tag.deal_text) ?? modelDeal(tag);
   const regular = positive(tag.regular_price);
+  let price = positive(tag.price);
+  let buy = count(tag.buy_qty, 2);
+  const worked = dealPrice(deal, regular);
+  if (worked) {
+    price = worked.price;
+    buy = worked.buy;
+  } else if (needsRegular(deal)) {
+    // A buy-get deal's price is never printed, so the model's own arithmetic is dropped; wait for
+    // the tag. A "save" whose price is just the saving was misread. A printed sale price stays.
+    const misread = deal.kind === "free" || (deal.kind === "pct" && deal.paid > 0)
+      || (deal.kind === "save" && price && Math.abs(price - deal.save) < 0.015);
+    if (misread) price = null;
+    if (deal.kind === "free") buy = deal.paid + deal.free;
+  }
+  if (!price && !needsRegular(deal)) return { found: false };
+  if (price) price = cents(price);
   let size = positive(tag.size);
   let u = unit(tag.unit);
   if (!size || !u) {
@@ -85,8 +201,6 @@ export function finish(tag) {
     check = "estimated";
   }
 
-  // how many to buy for that price (multi-buy and buy-one-get-one deals)
-  const buy = Number.isInteger(tag.buy_qty) && tag.buy_qty >= 2 && tag.buy_qty <= 12 ? tag.buy_qty : null;
   return {
     found: true, price, size, unit: u, note: text(tag.note, 80), check, buy,
     product: text(tag.product, 60), regular, deal,
@@ -96,8 +210,8 @@ export function finish(tag) {
 /**
  * One item from two pictures of it, such as its regular shelf tag and its sale sign (in either
  * order), or the same tag taken twice. The size comes from whichever has it; the price is the
- * lowest either one gives, working a price-less deal ("Buy 1 Get 1", "Save $1") out from the
- * regular price.
+ * lowest either one gives, a deal being worked out from the regular price (never taken from the
+ * model's own arithmetic when it can be worked out).
  */
 export function mergeReadings(a, b) {
   const sized = a.size ? a : b.size ? b : null;
@@ -105,13 +219,9 @@ export function mergeReadings(a, b) {
   const regular = a.regular ?? b.regular ?? [a, b].find((x) => x.price && !x.deal)?.price ?? null;
   const options = [];
   for (const x of [a, b]) {
-    if (x.price) options.push({ price: x.price, buy: x.buy, from: x });
-    else if (x.deal && regular) {
-      const { kind, save, pct } = x.deal;
-      if (kind === "bogo" && !save && !pct) options.push({ price: regular / 2, buy: 2, from: x });
-      else if (save) options.push({ price: regular - save, buy: x.buy, from: x });
-      else if (pct) options.push({ price: regular * (1 - pct / 100), buy: x.buy, from: x });
-    }
+    const worked = dealPrice(x.deal, regular);
+    if (worked) options.push({ ...worked, from: x });
+    else if (x.price) options.push({ price: x.price, buy: x.buy, from: x });
   }
   const best = options.filter((o) => o.price > 0).sort((p, q) => p.price - q.price)[0] ?? null;
   const dealer = [a, b].find((x) => x.deal) ?? null;
@@ -119,7 +229,7 @@ export function mergeReadings(a, b) {
   if (sized && (best?.from === sized || sized.check === "estimated")) check = sized.check;
   return {
     found: true,
-    price: best ? Math.round(best.price * 100) / 100 : null,
+    price: best ? cents(best.price) : null,
     size: sized?.size ?? null,
     unit: sized?.unit ?? null,
     note: dealer?.note ?? a.note ?? b.note ?? null,
@@ -146,7 +256,7 @@ export function parseCards(raw) {
     .map((c) => {
       const size = positive(c.size);
       const u = unit(c.unit);
-      const d = c.deal && typeof c.deal === "object" ? cleanDeal(c.deal.kind, c.deal.save, c.deal.pct) : null;
+      const d = cleanDeal(c.deal);
       return {
         n: c.n,
         found: true,
@@ -182,8 +292,8 @@ function sameSize(a, b) {
 /**
  * The backup for when the model doesn't say a sale sign and a shelf tag are the same item: a sign
  * with only the deal meeting a priced tag (or the other way round) whose names agree (the shorter
- * name's words nearly all in the longer, since signs name things more briefly) and whose sizes
- * agree. Only when exactly one card fits.
+ * name's words nearly all in the longer, since signs name things more briefly, or the same brand
+ * and both sizes printed and equal) and whose sizes agree. Only when exactly one card fits.
  */
 export function likelyTwin(own, cards) {
   const mine = nameWords(own.product);
@@ -194,7 +304,11 @@ export function likelyTwin(own, cards) {
     const theirs = nameWords(c.product);
     if (theirs.size < 2 || !sameSize(own, c)) return false;
     const [small, big] = mine.size <= theirs.size ? [mine, theirs] : [theirs, mine];
-    return [...small].filter((w) => big.has(w)).length / small.size >= 0.75;
+    const shared = [...small].filter((w) => big.has(w)).length;
+    if (shared / small.size >= 0.75) return true;
+    // a sign often names a whole line ("Coca-Cola soft drink products" for a Coca-Cola Zero tag):
+    // the same brand first and the same size, both printed
+    return shared >= 2 && [...mine][0] === [...theirs][0] && own.size && c.size;
   });
   return fits.length === 1 ? fits[0] : null;
 }
